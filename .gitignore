@@ -10,4 +10,8 @@ wheels/
 .venv
 # custom
 .serena/
+CONTEST.md
+maycando.md
+TODO.md
+AGENTS.md
 
