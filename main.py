@@ -1,11 +1,10 @@
 from algorithms import (
     CandidateSolution,
-    GeneticAlgorithm,
     Ingredient,
-    NSGAII,
-    ParticleSwarmOptimization,
+    PymooNSGAII,
+    PymooSingleObjectiveGA,
+    PySwarmsPSO,
     evaluate_metrics,
-    single_objective_score,
 )
 
 
@@ -35,7 +34,7 @@ def describe_candidate(label: str, candidate: CandidateSolution, ingredients: li
 
 
 def run_single_objective_algorithms(ingredients: list[Ingredient]) -> list[CandidateSolution]:
-    """执行遗传算法与粒子群算法，并返回两个最优解用于对比。
+    """执行 pymoo GA 与 pyswarms PSO，并返回两个最优解用于对比。
 
     Args:
         ingredients: 成分列表。
@@ -43,8 +42,8 @@ def run_single_objective_algorithms(ingredients: list[Ingredient]) -> list[Candi
     Returns:
         [GA 最优, PSO 最优]。
     """
-    ga = GeneticAlgorithm(ingredients, lambda sol: single_objective_score(sol, ingredients))
-    pso = ParticleSwarmOptimization(ingredients, lambda sol: single_objective_score(sol, ingredients))
+    ga = PymooSingleObjectiveGA(ingredients)
+    pso = PySwarmsPSO(ingredients)
     best_ga = ga.run()
     best_pso = pso.run()
     return [best_ga, best_pso]
@@ -59,11 +58,12 @@ def run_nsga(ingredients: list[Ingredient]) -> None:
     Returns:
         None
     """
-    nsga = NSGAII(ingredients)
-    population = nsga.run()
-    front = nsga.pareto_front(population)
+    nsga = PymooNSGAII(ingredients)
+    solutions, metrics = nsga.run()
     print("\nNSGA-II 非支配集候选：")
-    for idx, (candidate, (synergy, toxicity)) in enumerate(front, 1):
+    for idx, (candidate, metric) in enumerate(zip(solutions, metrics), 1):
+        synergy = -metric[0]
+        toxicity = metric[1]
         penalty = evaluate_metrics(candidate, ingredients)[2]
         print(f"  {idx}. 协同 {synergy:.3f}，肝毒性 {toxicity:.3f}，惩罚 {penalty:.2f}")
 
