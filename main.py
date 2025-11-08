@@ -29,7 +29,7 @@ def describe_candidate(label: str, candidate: CandidateSolution, ingredients: li
         ingredients: 成分清单。
     """
     synergy, toxicity, penalty = evaluate_metrics(candidate, ingredients)
-    selected = [ing.name for select, ing in zip(candidate.selects, ingredients) if select]
+    selected = [ingredients[idx].name for idx in candidate.iter_selected_indices()]
     print(f"{label}：协同 {synergy:.3f}，肝毒性 {toxicity:.3f}，惩罚 {penalty:.2f}，配伍 {selected}")
 
 

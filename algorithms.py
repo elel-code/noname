@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import math
+from array import array
 from dataclasses import dataclass
-from typing import List, Sequence, Tuple
+from typing import Iterable, List, Sequence, Tuple
 
 import numpy as np
 from pymoo.algorithms.moo.nsga2 import NSGA2
@@ -32,41 +34,70 @@ class Ingredient:
     dl: float = 0.0
 
 
+BITS_PER_BYTE = 8
+
+
+def _pack_bools(values: Sequence[bool]) -> bytearray:
+    data = bytearray(math.ceil(len(values) / BITS_PER_BYTE))
+    for idx, value in enumerate(values):
+        if value:
+            data[idx // BITS_PER_BYTE] |= 1 << (idx % BITS_PER_BYTE)
+    return data
+
+
+def _bit_is_set(bits: bytearray, idx: int) -> bool:
+    return bool(bits[idx // BITS_PER_BYTE] & (1 << (idx % BITS_PER_BYTE)))
+
+
 @dataclass
 class CandidateSolution:
-    """混合染色体：布尔选择 + 实数剂量。
+    """混合染色体：布尔选择 + 实数配比（使用位存储减少内存占用）。"""
 
-    Attributes:
-        selects: 每个成分是否被选中（True/False）。
-        proportions: 与 selects 同步的混合剂量向量（非归一化）。
-    """
+    select_bits: bytearray
+    proportions: array
+    length: int
 
-    selects: List[bool]
-    proportions: List[float]
+    @classmethod
+    def from_components(cls, selects: Sequence[bool], proportions: Sequence[float]) -> "CandidateSolution":
+        return cls(_pack_bools(selects), array("f", proportions), len(selects))
 
-    def normalized_proportions(self) -> List[float]:
-        total = 0.0
-        for sel, prop in zip(self.selects, self.proportions):
+    def iter_selects(self) -> Iterable[bool]:
+        for idx in range(self.length):
+            yield _bit_is_set(self.select_bits, idx)
+
+    def iter_selected_indices(self) -> Iterable[int]:
+        for idx, sel in enumerate(self.iter_selects()):
             if sel:
-                total += prop
+                yield idx
+
+    def normalized_proportions(self) -> array:
+        selects = list(self.iter_selects())
+        total = sum(prop for sel, prop in zip(selects, self.proportions) if sel)
+        normalized = array("f", [0.0] * self.length)
         if total <= 0:
-            selected = [sel for sel in self.selects if sel]
-            if not selected:
-                return [0.0] * len(self.proportions)
-            default = 1.0 / len(selected)
-            return [default if sel else 0.0 for sel in self.selects]
-        return [prop / total if sel else 0.0 for sel, prop in zip(self.selects, self.proportions)]
+            selected_indices = [idx for idx, sel in enumerate(selects) if sel]
+            if not selected_indices:
+                return normalized
+            default = 1.0 / len(selected_indices)
+            for idx in selected_indices:
+                normalized[idx] = default
+            return normalized
+        for idx, (sel, prop) in enumerate(zip(selects, self.proportions)):
+            if sel:
+                normalized[idx] = prop / total
+        return normalized
 
     def with_normalized(self) -> "CandidateSolution":
-        return CandidateSolution(list(self.selects), self.normalized_proportions())
+        return CandidateSolution(bytearray(self.select_bits), self.normalized_proportions(), self.length)
 
 
-def ensure_selection(selects: List[bool]) -> List[bool]:
-    """保证至少选中一个成分。"""
+def ensure_selection(selects: List[bool], ingredients: Sequence[Ingredient]) -> List[bool]:
+    """保证至少选中一个成分；若全为 False，则启用协同基线最高的成分以保持可复现。"""
     if any(selects):
         return selects
     copy = list(selects)
-    copy[np.random.randint(len(copy))] = True
+    best_index = max(range(len(ingredients)), key=lambda idx: ingredients[idx].synergy_baseline)
+    copy[best_index] = True
     return copy
 
 
@@ -82,10 +113,10 @@ def vector_to_candidate(vector: Sequence[float], ingredients: Sequence[Ingredien
     """
     half = len(vector) // 2
     selects = [float(value) > 0.5 for value in vector[:half]]
-    selects = ensure_selection(selects)
+    selects = ensure_selection(selects, ingredients)
     proportions = [float(value) for value in vector[half:]]
     proportions = [max(0.01, min(1.0, value)) for value in proportions]
-    return CandidateSolution(selects, proportions).with_normalized()
+    return CandidateSolution.from_components(selects, proportions)
 
 
 def compute_loew_synergy(candidate: CandidateSolution, ingredients: Sequence[Ingredient]) -> float:
@@ -99,7 +130,7 @@ def compute_loew_synergy(candidate: CandidateSolution, ingredients: Sequence[Ing
         加权协同得分。
     """
     synergy = 0.0
-    for select, proportion, ingredient in zip(candidate.selects, candidate.proportions, ingredients):
+    for select, proportion, ingredient in zip(candidate.iter_selects(), candidate.proportions, ingredients):
         if select:
             synergy += ingredient.synergy_baseline * proportion
     return synergy
@@ -116,7 +147,7 @@ def compute_hepatotoxicity_score(candidate: CandidateSolution, ingredients: Sequ
         配比加权后的 hepatotoxicity_score。
     """
     score = 0.0
-    for select, proportion, ingredient in zip(candidate.selects, candidate.proportions, ingredients):
+    for select, proportion, ingredient in zip(candidate.iter_selects(), candidate.proportions, ingredients):
         if select:
             score += ingredient.hepatotoxicity_score * proportion
     return score
@@ -133,7 +164,7 @@ def diversity_penalty(candidate: CandidateSolution, ingredients: Sequence[Ingred
         惩罚值（0.1 或 0）。
     """
     herb_proportions: dict[str, float] = {}
-    for select, proportion, ingredient in zip(candidate.selects, candidate.proportions, ingredients):
+    for select, proportion, ingredient in zip(candidate.iter_selects(), candidate.proportions, ingredients):
         if not select:
             continue
         herb_proportions[ingredient.herb] = herb_proportions.get(ingredient.herb, 0.0) + proportion
