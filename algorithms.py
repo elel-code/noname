@@ -135,13 +135,14 @@ def diversity_penalty(candidate: CandidateSolution, ingredients: Sequence[Ingred
         惩罚值（0.1 或 0）。
     """
     normalized = candidate.with_normalized()
-    selected_herbs = [ingredient.herb for select, ingredient in zip(normalized.selects, ingredients) if select]
-    if not selected_herbs:
+    herb_proportions: dict[str, float] = {}
+    for select, proportion, ingredient in zip(normalized.selects, normalized.proportions, ingredients):
+        if not select:
+            continue
+        herb_proportions[ingredient.herb] = herb_proportions.get(ingredient.herb, 0.0) + proportion
+    if not herb_proportions:
         return 0.0
-    counts = {}
-    for herb in selected_herbs:
-        counts[herb] = counts.get(herb, 0) + 1
-    majority_ratio = max(counts.values()) / len(selected_herbs)
+    majority_ratio = max(herb_proportions.values())
     return 0.1 if majority_ratio >= 0.8 else 0.0
 
 
