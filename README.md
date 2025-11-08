@@ -19,9 +19,8 @@
 
 1. **安装依赖**:
    ```bash
-   pip install -r requirements.txt
+   uv sync
    ```
-   *注意：`requirements.txt` 文件当前缺失，需要根据 `pyproject.toml` 或 `uv.lock` 手动生成。*
 
 2. **执行优化**:
    ```bash
