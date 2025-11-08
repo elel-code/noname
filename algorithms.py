@@ -92,15 +92,14 @@ def compute_loew_synergy(candidate: CandidateSolution, ingredients: Sequence[Ing
     """Loewe 指标的近似：配比加权协同基线。
 
     Args:
-        candidate: 当前组合。
+        candidate: 已归一化组合。
         ingredients: 成分数据集。
 
     Returns:
         加权协同得分。
     """
-    normalized = candidate.with_normalized()
     synergy = 0.0
-    for select, proportion, ingredient in zip(normalized.selects, normalized.proportions, ingredients):
+    for select, proportion, ingredient in zip(candidate.selects, candidate.proportions, ingredients):
         if select:
             synergy += ingredient.synergy_baseline * proportion
     return synergy
@@ -110,15 +109,14 @@ def compute_hepatotoxicity_score(candidate: CandidateSolution, ingredients: Sequ
     """计算组合的加权肝毒性得分。
 
     Args:
-        candidate: 当前组合。
+        candidate: 已归一化组合。
         ingredients: 成分数据集。
 
     Returns:
         配比加权后的 hepatotoxicity_score。
     """
-    normalized = candidate.with_normalized()
     score = 0.0
-    for select, proportion, ingredient in zip(normalized.selects, normalized.proportions, ingredients):
+    for select, proportion, ingredient in zip(candidate.selects, candidate.proportions, ingredients):
         if select:
             score += ingredient.hepatotoxicity_score * proportion
     return score
@@ -134,9 +132,8 @@ def diversity_penalty(candidate: CandidateSolution, ingredients: Sequence[Ingred
     Returns:
         惩罚值（0.1 或 0）。
     """
-    normalized = candidate.with_normalized()
     herb_proportions: dict[str, float] = {}
-    for select, proportion, ingredient in zip(normalized.selects, normalized.proportions, ingredients):
+    for select, proportion, ingredient in zip(candidate.selects, candidate.proportions, ingredients):
         if not select:
             continue
         herb_proportions[ingredient.herb] = herb_proportions.get(ingredient.herb, 0.0) + proportion
@@ -156,9 +153,10 @@ def evaluate_metrics(candidate: CandidateSolution, ingredients: Sequence[Ingredi
     Returns:
         (协同得分, 肝毒性, 惩罚)
     """
-    synergy = compute_loew_synergy(candidate, ingredients)
-    toxicity = compute_hepatotoxicity_score(candidate, ingredients)
-    penalty = diversity_penalty(candidate, ingredients)
+    normalized_candidate = candidate.with_normalized()
+    synergy = compute_loew_synergy(normalized_candidate, ingredients)
+    toxicity = compute_hepatotoxicity_score(normalized_candidate, ingredients)
+    penalty = diversity_penalty(normalized_candidate, ingredients)
     synergy_with_penalty = synergy * (1 - penalty)
     return synergy_with_penalty, toxicity, penalty
 
