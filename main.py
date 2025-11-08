@@ -5,6 +5,7 @@ from algorithms import (
     PymooSingleObjectiveGA,
     PySwarmsPSO,
     evaluate_metrics,
+    select_candidate_by_weighted_sum,
 )
 
 
@@ -111,19 +112,22 @@ def sample_ingredients() -> list[Ingredient]:
 
 
 def describe_candidate(label: str, candidate: CandidateSolution, ingredients: list[Ingredient]) -> None:
-    """打印候选结果的三项指标与具体成分选取。
+    """打印候选结果的指标与具体成分选取。
 
     Args:
         label: 输出标签，如算法名称。
         candidate: 要展示的组合。
         ingredients: 成分清单。
     """
-    aci, toxicity, penalty = evaluate_metrics(candidate, ingredients)
+    aci_penalized, toxicity, penalty, aci_raw = evaluate_metrics(candidate, ingredients)
     selected = [ingredients[idx].name for idx in candidate.iter_selected_indices()]
-    print(f"{label}：ACI {aci:.3f}，肝毒性 {toxicity:.3f}，惩罚 {penalty:.2f}，配伍 {selected}")
+    print(
+        f"{label}：ACI_pen {aci_penalized:.3f} (raw {aci_raw:.3f})，"
+        f"肝毒性 {toxicity:.3f}，惩罚 {penalty:.2f}，配伍 {selected}"
+    )
 
 
-def run_single_objective_algorithms(ingredients: list[Ingredient]) -> list[CandidateSolution]:
+def run_single_objective_algorithms(ingredients: list[Ingredient]) -> tuple[list[CandidateSolution], float]:
     """执行 pymoo GA 与 pyswarms PSO，并返回两个最优解用于对比。
 
     Args:
@@ -136,11 +140,11 @@ def run_single_objective_algorithms(ingredients: list[Ingredient]) -> list[Candi
     pso = PySwarmsPSO(ingredients)
     best_ga = ga.run()
     best_pso = pso.run()
-    return [best_ga, best_pso]
+    return [best_ga, best_pso], ga.toxicity_weight
 
 
-def run_nsga(ingredients: list[Ingredient]) -> None:
-    """运行 NSGA-II 并打印非支配集候选的指标。
+def run_nsga(ingredients: list[Ingredient], toxicity_weight: float) -> None:
+    """运行 NSGA-II 并打印非支配集候选的指标，并按权重挑选一个候选。
 
     Args:
         ingredients: 成分列表。
@@ -156,6 +160,13 @@ def run_nsga(ingredients: list[Ingredient]) -> None:
         toxicity = metric[1]
         penalty = evaluate_metrics(candidate, ingredients)[2]
         print(f"  {idx}. ACI {aci:.3f}，肝毒性 {toxicity:.3f}，惩罚 {penalty:.2f}")
+    best_candidate, best_metrics = select_candidate_by_weighted_sum(solutions, ingredients, toxicity_weight)
+    print(
+        f"\n按 toxicity_weight={toxicity_weight:.2f} 的加权结果："
+        f"ACI_pen {best_metrics['aci_penalized']:.3f} (raw {best_metrics['aci_raw']:.3f})，"
+        f"肝毒性 {best_metrics['toxicity']:.3f}，惩罚 {best_metrics['penalty']:.2f}"
+    )
+    describe_candidate("NSGA-权重选择", best_candidate, ingredients)
 
 
 def main() -> None:
@@ -165,11 +176,11 @@ def main() -> None:
         None
     """
     ingredients = sample_ingredients()
-    single_objective_results = run_single_objective_algorithms(ingredients)
+    single_objective_results, toxicity_weight = run_single_objective_algorithms(ingredients)
     print("单目标算法结果：")
     for label, candidate in zip(("遗传算法", "粒子群算法"), single_objective_results):
         describe_candidate(label, candidate, ingredients)
-    run_nsga(ingredients)
+    run_nsga(ingredients, toxicity_weight)
 
 
 if __name__ == "__main__":

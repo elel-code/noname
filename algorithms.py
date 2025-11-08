@@ -24,6 +24,11 @@ _DEFAULT_ALGO_CONFIG = {
         "swarm_size": 24,
         "options": {"c1": 1.2, "c2": 1.2, "w": 0.6},
     },
+    "aci": {
+        "lambda_weight": 0.3,
+        "complement_variance_max": 0.25,
+        "coverage_floor": 0.0,
+    },
 }
 _ALGO_CONFIG_CACHE: dict | None = None
 
@@ -53,6 +58,12 @@ def _load_algorithm_config() -> dict:
     return config
 
 
+def _get_aci_settings() -> dict:
+    """便捷访问 ACI 相关配置。"""
+
+    return _load_algorithm_config().get("aci", _DEFAULT_ALGO_CONFIG["aci"])
+
+
 @dataclass(frozen=True)
 class Ingredient:
     """描述单个中药成分的静态属性。
@@ -60,7 +71,7 @@ class Ingredient:
     Attributes:
         name: 成分名称。
         herb: 所属中药名。
-        hepatotoxicity_score: SwissADME 肝毒性打分（越高越差）。
+        hepatotoxicity_score: 外部模型/实验给出的肝毒性打分（越高越差）。
         synergy_baseline: 协同贡献基线（用于加权模型）。
         ob: Oral Bioavailability，若缺失可置 None。
         dl: Drug Likeness，若缺失可置 None。
@@ -92,11 +103,15 @@ class Ingredient:
 
 @dataclass(frozen=True)
 class FeatureWindow:
-    """用于定义 ADME 特征的“宜居区”。"""
+    """用于定义 ADME 特征的“宜居区”。
+
+    note 会描述该特征的单位或取值口径，方便事后定位。
+    """
 
     lower: float
     upper: float
     softness: float
+    note: str = ""
 
 
 ADME_FEATURE_ATTRS: dict[str, str] = {
@@ -113,20 +128,21 @@ ADME_FEATURE_ATTRS: dict[str, str] = {
 }
 
 FEATURE_WINDOWS: dict[str, FeatureWindow] = {
-    "mw": FeatureWindow(180.0, 500.0, 120.0),
-    "alogp": FeatureWindow(-0.5, 5.0, 1.5),
-    "hdon": FeatureWindow(0.0, 5.0, 2.0),
-    "hacc": FeatureWindow(0.0, 10.0, 3.0),
-    "ob": FeatureWindow(30.0, 70.0, 15.0),
-    "caco2": FeatureWindow(0.4, 1.5, 0.3),
-    "bbb": FeatureWindow(-1.0, 1.0, 0.5),
-    "dl": FeatureWindow(0.18, 0.5, 0.1),
-    "fasa": FeatureWindow(0.2, 0.6, 0.15),
-    "hl": FeatureWindow(3.0, 12.0, 3.0),
+    "mw": FeatureWindow(180.0, 500.0, 120.0, note="Dalton"),
+    "alogp": FeatureWindow(-0.5, 5.0, 1.5, note="ALogP"),
+    "hdon": FeatureWindow(0.0, 5.0, 2.0, note="count"),
+    "hacc": FeatureWindow(0.0, 10.0, 3.0, note="count"),
+    "ob": FeatureWindow(30.0, 70.0, 15.0, note="OB%"),
+    "caco2": FeatureWindow(0.4, 1.5, 0.3, note="log10(Papp, cm/s)"),
+    "bbb": FeatureWindow(-1.0, 1.0, 0.5, note="logBB or mapped分类"),
+    "dl": FeatureWindow(0.18, 0.5, 0.1, note="DL"),
+    "fasa": FeatureWindow(0.2, 0.6, 0.15, note="FASA-"),
+    "hl": FeatureWindow(3.0, 12.0, 3.0, note="hours"),
 }
 
 ACI_LAMBDA = 0.3
 _SAFE_EPS = 1e-6
+_TOTAL_FEATURES = len(ADME_FEATURE_ATTRS)
 
 
 BITS_PER_BYTE = 8
@@ -223,15 +239,38 @@ def _window_score(value: float, window: FeatureWindow) -> float:
     return math.exp(-((delta / max(window.softness, _SAFE_EPS)) ** 2))
 
 
+def _prepare_feature_value(feature: str, value: float | None) -> float | None:
+    """根据特征类型调整原始值（如 BBB 的 0/1 映射）。"""
+
+    if value is None:
+        return None
+    if feature == "bbb":
+        if isinstance(value, bool):
+            return 0.5 if value else -0.5
+        if isinstance(value, (int, float)):
+            if math.isclose(value, 0.0, rel_tol=1e-3, abs_tol=1e-3):
+                return -0.5
+            if math.isclose(value, 1.0, rel_tol=1e-3, abs_tol=1e-3):
+                return 0.5
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"y", "yes", "pass", "true", "+"}:
+                return 0.5
+            if lowered in {"n", "no", "fail", "false", "-"}:
+                return -0.5
+    return float(value)
+
+
 def _normalized_feature_value(feature: str, value: float | None) -> float | None:
     """将原始特征值映射到 0-1 区间；缺失值返回 None。"""
 
-    if value is None:
+    prepared = _prepare_feature_value(feature, value)
+    if prepared is None:
         return None
     window = FEATURE_WINDOWS.get(feature)
     if window is None:
         return None
-    return _window_score(value, window)
+    return _window_score(prepared, window)
 
 
 def compute_desirability_score(ingredient: Ingredient) -> float:
@@ -248,13 +287,20 @@ def compute_desirability_score(ingredient: Ingredient) -> float:
     product = 1.0
     for score in scores:
         product *= score
-    return product ** (1 / len(scores))
+    geo_mean = product ** (1 / len(scores))
+    coverage = len(scores) / max(_TOTAL_FEATURES, 1)
+    coverage_floor = max(0.0, min(1.0, _get_aci_settings().get("coverage_floor", 0.0)))
+    return geo_mean * max(coverage, coverage_floor)
 
 
 def compute_complementarity_score(candidate: CandidateSolution, ingredients: Sequence[Ingredient]) -> float:
     """根据特征多样性计算组合互补性。"""
 
     feature_diversities: list[float] = []
+    variance_cap = max(
+        _SAFE_EPS,
+        float(_get_aci_settings().get("complement_variance_max", 0.25)),
+    )
     for feature, attr in ADME_FEATURE_ATTRS.items():
         values: list[float] = []
         weights: list[float] = []
@@ -276,13 +322,17 @@ def compute_complementarity_score(candidate: CandidateSolution, ingredients: Seq
         values_arr = np.array(values, dtype=float)
         mean = float(np.dot(weights_arr, values_arr))
         variance = float(np.dot(weights_arr, (values_arr - mean) ** 2))
-        feature_diversities.append(min(1.0, variance / 0.25))
+        feature_diversities.append(min(1.0, variance / variance_cap))
     if not feature_diversities:
         return 0.0
     return float(sum(feature_diversities) / len(feature_diversities))
 
 
-def compute_aci_score(candidate: CandidateSolution, ingredients: Sequence[Ingredient], lambda_weight: float = ACI_LAMBDA) -> float:
+def compute_aci_score(
+    candidate: CandidateSolution,
+    ingredients: Sequence[Ingredient],
+    lambda_weight: float | None = None,
+) -> float:
     """计算基于 ADME 特征的 ACI 指标。"""
 
     desirabilities: list[tuple[float, float]] = []
@@ -298,6 +348,8 @@ def compute_aci_score(candidate: CandidateSolution, ingredients: Sequence[Ingred
         return 0.0
     weighted_mean = sum(weight * desirability for weight, desirability in desirabilities) / total_prop
     complementarity = compute_complementarity_score(candidate, ingredients)
+    if lambda_weight is None:
+        lambda_weight = _get_aci_settings().get("lambda_weight", ACI_LAMBDA)
     lambda_weight = max(0.0, min(1.0, lambda_weight))
     return (1 - lambda_weight) * weighted_mean + lambda_weight * complementarity
 
@@ -340,22 +392,22 @@ def diversity_penalty(candidate: CandidateSolution, ingredients: Sequence[Ingred
     return 0.1 if majority_ratio >= 0.8 else 0.0
 
 
-def evaluate_metrics(candidate: CandidateSolution, ingredients: Sequence[Ingredient]) -> Tuple[float, float, float]:
-    """返回 (ACI, 肝毒性, 惩罚)。
+def evaluate_metrics(candidate: CandidateSolution, ingredients: Sequence[Ingredient]) -> Tuple[float, float, float, float]:
+    """返回 (ACI(含惩罚), 肝毒性, 惩罚, 纯 ACI)。
 
     Args:
         candidate: 当前组合。
         ingredients: 成分列表。
 
     Returns:
-        (ACI, 肝毒性, 惩罚)
+        (ACI, 肝毒性, 惩罚, ACI_raw)
     """
     normalized_candidate = candidate.with_normalized()
-    aci = compute_aci_score(normalized_candidate, ingredients)
+    aci_raw = compute_aci_score(normalized_candidate, ingredients)
     toxicity = compute_hepatotoxicity_score(normalized_candidate, ingredients)
     penalty = diversity_penalty(normalized_candidate, ingredients)
-    aci_with_penalty = aci * (1 - penalty)
-    return aci_with_penalty, toxicity, penalty
+    aci_with_penalty = aci_raw * (1 - penalty)
+    return aci_with_penalty, toxicity, penalty, aci_raw
 
 
 def single_objective_score(candidate: CandidateSolution, ingredients: Sequence[Ingredient], toxicity_weight: float = 1.0) -> float:
@@ -369,7 +421,7 @@ def single_objective_score(candidate: CandidateSolution, ingredients: Sequence[I
     Returns:
         复方综合得分（越高越优）。
     """
-    aci, toxicity, _ = evaluate_metrics(candidate, ingredients)
+    aci, toxicity, _, _ = evaluate_metrics(candidate, ingredients)
     return aci - toxicity_weight * toxicity
 
 
@@ -383,7 +435,7 @@ def multi_objective_score(candidate: CandidateSolution, ingredients: Sequence[In
     Returns:
         (ACI, 肝毒性)。
     """
-    aci, toxicity, _ = evaluate_metrics(candidate, ingredients)
+    aci, toxicity, _, _ = evaluate_metrics(candidate, ingredients)
     return aci, toxicity
 
 
@@ -503,3 +555,34 @@ class PySwarmsPSO:
         )
         _, best_pos = optimizer.optimize(self._fitness, iters=self.iterations, verbose=False)
         return vector_to_candidate(best_pos, self.ingredients)
+
+
+def select_candidate_by_weighted_sum(
+    pareto_candidates: Sequence[CandidateSolution],
+    ingredients: Sequence[Ingredient],
+    toxicity_weight: float,
+) -> Tuple[CandidateSolution, dict]:
+    """从 Pareto 集合中按权重（ACI-毒性）挑选最优解。
+
+    Returns:
+        (最佳 candidate, 指标字典)。
+    """
+
+    if not pareto_candidates:
+        raise ValueError("Pareto 集合为空，无法做权重挑选。")
+    best = None
+    best_score = -math.inf
+    for candidate in pareto_candidates:
+        score = single_objective_score(candidate, ingredients, toxicity_weight)
+        if score > best_score:
+            best = candidate
+            best_score = score
+    assert best is not None
+    aci_pen, tox, penalty, aci_raw = evaluate_metrics(best, ingredients)
+    return best, {
+        "score": best_score,
+        "aci_penalized": aci_pen,
+        "aci_raw": aci_raw,
+        "toxicity": tox,
+        "penalty": penalty,
+    }

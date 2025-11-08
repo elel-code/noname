@@ -16,5 +16,10 @@
       "c2": 1.2,
       "w": 0.6
     }
+  },
+  "aci": {
+    "lambda_weight": 0.3,
+    "complement_variance_max": 0.25,
+    "coverage_floor": 0.0
   }
 }
