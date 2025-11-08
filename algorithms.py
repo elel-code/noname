@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import math
 from array import array
+import copy
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
 import numpy as np
@@ -11,6 +14,43 @@ from pymoo.algorithms.soo.nonconvex.ga import GA as PymooGAAlg
 from pymoo.core.problem import ElementwiseProblem
 from pymoo.optimize import minimize
 from pyswarms.single.global_best import GlobalBestPSO
+
+CONFIG_PATH = Path(__file__).resolve().parent / "config" / "algorithms.json"
+_DEFAULT_ALGO_CONFIG = {
+    "ga": {"generations": 25, "population_size": 32, "toxicity_weight": 1.0},
+    "nsga2": {"generations": 30, "population_size": 40},
+    "pso": {
+        "iterations": 40,
+        "swarm_size": 24,
+        "options": {"c1": 1.2, "c2": 1.2, "w": 0.6},
+    },
+}
+_ALGO_CONFIG_CACHE: dict | None = None
+
+
+def _deep_update(base: dict, overrides: dict) -> dict:
+    result = copy.deepcopy(base)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_update(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _load_algorithm_config() -> dict:
+    global _ALGO_CONFIG_CACHE
+    if _ALGO_CONFIG_CACHE is not None:
+        return _ALGO_CONFIG_CACHE
+    config = copy.deepcopy(_DEFAULT_ALGO_CONFIG)
+    try:
+        with CONFIG_PATH.open("r", encoding="utf-8") as fp:
+            user_config = json.load(fp)
+            config = _deep_update(config, user_config)
+    except FileNotFoundError:
+        pass
+    _ALGO_CONFIG_CACHE = config
+    return config
 
 
 @dataclass(frozen=True)
@@ -256,18 +296,20 @@ class CombinationProblem(ElementwiseProblem):
 class PymooSingleObjectiveGA:
     """使用 pymoo GA 处理单目标优化（协同 - 毒性）。"""
 
-    def __init__(self, ingredients: Sequence[Ingredient], toxicity_weight: float = 1.0, generations: int = 25, population_size: int = 32):
-        """配置 GA 所需组件。
-
-        Args:
-            ingredients: 成分列表。
-            toxicity_weight: 毒性惩罚权重。
-            generations: 演化代数。
-            population_size: 种群规模。
-        """
-        self.problem = CombinationProblem(ingredients, mode="single", toxicity_weight=toxicity_weight)
-        self.algorithm = PymooGAAlg(pop_size=population_size, eliminate_duplicates=True)
-        self.generations = generations
+    def __init__(
+        self,
+        ingredients: Sequence[Ingredient],
+        toxicity_weight: float | None = None,
+        generations: int | None = None,
+        population_size: int | None = None,
+    ):
+        """配置 GA 所需组件；默认参数来自 config/algorithms.json。"""
+        cfg = _load_algorithm_config()["ga"]
+        self.toxicity_weight = toxicity_weight if toxicity_weight is not None else cfg["toxicity_weight"]
+        self.generations = generations if generations is not None else cfg["generations"]
+        pop = population_size if population_size is not None else cfg["population_size"]
+        self.problem = CombinationProblem(ingredients, mode="single", toxicity_weight=self.toxicity_weight)
+        self.algorithm = PymooGAAlg(pop_size=pop, eliminate_duplicates=True)
 
     def run(self) -> CandidateSolution:
         """执行单目标 GA 并返回最优 candidate。"""
@@ -278,17 +320,13 @@ class PymooSingleObjectiveGA:
 class PymooNSGAII:
     """基于 pymoo NSGA-II 的多目标优化器。"""
 
-    def __init__(self, ingredients: Sequence[Ingredient], generations: int = 30, population_size: int = 40):
-        """初始化 NSGA-II 算法。
-
-        Args:
-            ingredients: 成分列表。
-            generations: 演化代数。
-            population_size: 种群规模。
-        """
+    def __init__(self, ingredients: Sequence[Ingredient], generations: int | None = None, population_size: int | None = None):
+        """初始化 NSGA-II；默认参数读取配置文件。"""
+        cfg = _load_algorithm_config()["nsga2"]
+        self.generations = generations if generations is not None else cfg["generations"]
+        pop = population_size if population_size is not None else cfg["population_size"]
         self.problem = CombinationProblem(ingredients, mode="multi")
-        self.algorithm = NSGA2(pop_size=population_size)
-        self.generations = generations
+        self.algorithm = NSGA2(pop_size=pop)
 
     def run(self) -> Tuple[List[CandidateSolution], np.ndarray]:
         """执行 NSGA-II 并返回 candidate 与目标值矩阵。
@@ -305,19 +343,20 @@ class PymooNSGAII:
 class PySwarmsPSO:
     """借助 pyswarms 实现的单目标粒子群优化。"""
 
-    def __init__(self, ingredients: Sequence[Ingredient], iterations: int = 40, swarm_size: int = 24):
-        """配置 PSO 超参数。
-
-        Args:
-            ingredients: 成分列表。
-            iterations: 迭代次数。
-            swarm_size: 粒子数量。
-        """
+    def __init__(
+        self,
+        ingredients: Sequence[Ingredient],
+        iterations: int | None = None,
+        swarm_size: int | None = None,
+        options: dict | None = None,
+    ):
+        """配置 PSO 超参数，默认来自配置文件。"""
+        cfg = _load_algorithm_config()["pso"]
         self.ingredients = ingredients
-        self.iterations = iterations
-        self.swarm_size = swarm_size
+        self.iterations = iterations if iterations is not None else cfg["iterations"]
+        self.swarm_size = swarm_size if swarm_size is not None else cfg["swarm_size"]
+        self.options = options if options is not None else cfg["options"]
         self.dimensions = len(ingredients) * 2
-        self.options = {"c1": 1.2, "c2": 1.2, "w": 0.6}
 
     def _fitness(self, swarm: np.ndarray) -> np.ndarray:
         """pyswarms 回调：计算每个粒子的目标值（越小越优）。"""

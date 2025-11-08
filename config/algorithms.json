@@ -1,0 +1,20 @@
+{
+  "ga": {
+    "generations": 25,
+    "population_size": 32,
+    "toxicity_weight": 1.0
+  },
+  "nsga2": {
+    "generations": 30,
+    "population_size": 40
+  },
+  "pso": {
+    "iterations": 40,
+    "swarm_size": 24,
+    "options": {
+      "c1": 1.2,
+      "c2": 1.2,
+      "w": 0.6
+    }
+  }
+}

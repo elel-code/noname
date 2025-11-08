@@ -1,5 +1,7 @@
 # API 列表
 
+> 配置：`config/algorithms.json` 软编码 GA/NSGA-II/PSO 的 generations、population、迭代次数及 PSO options，`algorithms.py` 会在 `_load_algorithm_config()` 中读取（缺省使用内置 `_DEFAULT_ALGO_CONFIG`）。
+
 ## algorithms.py
 - `Ingredient`：冻结数据类，存储成分名、母药名、SwissADME 肝毒性分数、协同基线、OB/DL。
 - `CandidateSolution`：混合染色体，使用位串 `select_bits` + `array('f')` 存配比，提供 `from_components`、`iter_selects`、`iter_selected_indices`、`normalized_proportions`、`with_normalized`。
@@ -11,10 +13,11 @@
 - `evaluate_metrics(candidate, ingredients)`：一次性返回协同、肝毒性、惩罚三要素（内部进行单次归一）。
 - `single_objective_score(candidate, ingredients, toxicity_weight=1.0)`：协同减去毒性的单目标适应度。
 - `multi_objective_score(candidate, ingredients)`：返回 `(协同, 肝毒性)`，供 NSGA-II 排序。
+- `_load_algorithm_config()`：读取/缓存 `config/algorithms.json`（缺失退回默认配置）。
 - `CombinationProblem`：`pymoo` 的 `ElementwiseProblem` 实现，支持 single/multi 目标。
-- `PymooSingleObjectiveGA`：调用 `pymoo.algorithms.soo.nonconvex.ga.GA` 处理协同-毒性最小化。
-- `PymooNSGAII`：调用 `pymoo.algorithms.moo.nsga2.NSGA2` 生成 Pareto 解。
-- `PySwarmsPSO`：使用 `pyswarms.single.global_best.GlobalBestPSO` 求单目标最优。
+- `PymooSingleObjectiveGA`：调用 `pymoo.algorithms.soo.nonconvex.ga.GA` 处理协同-毒性最小化，默认参数来自配置。
+- `PymooNSGAII`：调用 `pymoo.algorithms.moo.nsga2.NSGA2` 生成 Pareto 解，默认 generations/pop_size 由配置驱动。
+- `PySwarmsPSO`：使用 `pyswarms.single.global_best.GlobalBestPSO` 求单目标最优，迭代数/粒子数/`options` 由配置文件注入。
 
 ## main.py
 - `sample_ingredients()`：返回示例成分列表（黄芩素、川芎嗪、黄连碱等）。
