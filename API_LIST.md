@@ -1,30 +1,80 @@
-# API 列表
+# API 文档
 
-> 配置：`config/algorithms.json` 软编码 GA/NSGA-II/PSO 的 generations、population、迭代次数及 PSO options，并新增 `aci` 区块（lambda、互补方差上限、coverage floor 等）；`algorithms.py` 会在 `_load_algorithm_config()` 中读取（缺省使用内置 `_DEFAULT_ALGO_CONFIG`）。
+本文档提供了 `algorithms.py` 和 `main.py` 中主要类和函数的详细说明。
 
-## algorithms.py
-- `Ingredient`：冻结数据类，存储成分名、母药名、SwissADME 肝毒性分数、协同基线以及 ADME 特征（MW、ALogP、HDon/HAcc、OB、Caco-2、BBB、DL、FASA-、HL）。
-- `CandidateSolution`：混合染色体，使用位串 `select_bits` + `array('f')` 存配比，提供 `from_components`、`iter_selects`、`iter_selected_indices`、`normalized_proportions`、`with_normalized`。
-- `ensure_selection(selects, ingredients)`：保证选择向量至少包含一个 `True`；若全 False，则启用协同基线最高的成分以保持可复现。
-- `vector_to_candidate(vector, ingredients)`：将 `[0,1]` 向量截取为选择+配比（只归一一次），返回 `CandidateSolution`。
-- `compute_desirability_score(ingredient)`：将单体 ADME 特征映射到 0-1，按 coverage 系数修正后再取几何平均。
-- `compute_complementarity_score(candidate, ingredients)`：基于特征方差衡量组合互补性。
-- `compute_aci_score(candidate, ingredients, lambda_weight=None)`：融合单体可用性与互补项，lambda 默认来自配置。
-- `compute_hepatotoxicity_score(candidate, ingredients)`：汇总加权的 hepatotoxicity_score。
-- `diversity_penalty(candidate, ingredients)`：若某味药占比 ≥80%，返回 0.1；否则 0。
-- `evaluate_metrics(candidate, ingredients)`：一次性返回 `(ACI_pen, 肝毒性, 惩罚, ACI_raw)`（内部进行单次归一）。
-- `single_objective_score(candidate, ingredients, toxicity_weight=1.0)`：ACI 减去毒性的单目标适应度。
-- `multi_objective_score(candidate, ingredients)`：返回 `(ACI, 肝毒性)`，供 NSGA-II 排序。
-- `select_candidate_by_weighted_sum(pareto_candidates, ingredients, toxicity_weight)`：在 Pareto 集合上按单目标权重挑选最佳解。
-- `_load_algorithm_config()`：读取/缓存 `config/algorithms.json`（缺失退回默认配置）。
-- `CombinationProblem`：`pymoo` 的 `ElementwiseProblem` 实现，支持 single/multi 目标。
-- `PymooSingleObjectiveGA`：调用 `pymoo.algorithms.soo.nonconvex.ga.GA` 处理 ACI-毒性优化，默认参数来自配置。
-- `PymooNSGAII`：调用 `pymoo.algorithms.moo.nsga2.NSGA2` 生成 Pareto 解（最大化 ACI、最小化毒性），默认 generations/pop_size 由配置驱动。
-- `PySwarmsPSO`：使用 `pyswarms.single.global_best.GlobalBestPSO` 求单目标最优，迭代数/粒子数/`options` 由配置文件注入。
+---
 
-## main.py
-- `sample_ingredients()`：返回示例成分列表（黄芩素、川芎嗪、黄连碱等），并补充 ADME 特征。
-- `describe_candidate(label, candidate, ingredients)`：打印 ACI_pen/raw、毒性、惩罚与选中成分。
-- `run_single_objective_algorithms(ingredients)`：执行 `PymooSingleObjectiveGA` 与 `PySwarmsPSO`，返回 `[GA 最优, PSO 最优]` 及 GA 的 `toxicity_weight`。
-- `run_nsga(ingredients, toxicity_weight)`：运行 `PymooNSGAII` 并打印非支配集候选，同时调用 `select_candidate_by_weighted_sum` 给出按权重挑选的结果。
-- `main()`：入口，读取示例成分、输出单目标与 NSGA-II 结果，并展示帕累托择优。 
+## `algorithms.py` - 核心算法与评估
+
+### 数据结构
+
+-   **`Ingredient`**: 一个 `dataclass`，用于存储单个成分的所有相关信息。
+    -   **字段**: `name`, `host_drug`, `hepatotoxicity_score`, `synergy_baseline`, 以及多个 ADME 特征（`MW`, `AlogP`, 等）。
+    -   **作用**: 作为整个系统的基础数据单元。
+
+-   **`CandidateSolution`**: 表示一个候选的成分组合。
+    -   **结构**: 内部包含一个布尔列表 `select_bits` (决定哪些成分被选中) 和一个浮点数数组 `proportions` (存储各成分的配比)。
+    -   **主要方法**:
+        -   `from_components()`: 从指定的成分和配比创建实例。
+        -   `iter_selects()`: 迭代选中的成分及其配比。
+        -   `normalized_proportions()`: 返回归一化后的配比。
+
+### ACI 与肝毒性评估函数
+
+这些函数接收一个 `CandidateSolution` 和成分列表，计算特定的性能指标。
+
+-   `compute_desirability_score(ingredient)`: 计算单个成分的“可用性”分数。
+-   `compute_complementarity_score(candidate, ingredients)`: 计算组合的“互补性”分数。
+-   `compute_aci_score(candidate, ...)`: 结合可用性和互补性，计算最终的 ACI 分数。
+-   `compute_hepatotoxicity_score(candidate, ...)`: 计算组合的加权肝毒性分数。
+
+### 优化目标函数
+
+这些函数定义了遗传算法和粒子群优化的目标。
+
+-   **`single_objective_score(candidate, ...)`**: 单目标优化函数。
+    -   **公式**: `ACI - (toxicity_weight * 肝毒性)`
+    -   **用途**: 用于 GA 和 PSO。
+
+-   **`multi_objective_score(candidate, ...)`**: 多目标优化函数。
+    -   **返回**: `(-ACI, 肝毒性)`
+    -   **注意**: 返回 `-ACI` 是因为 `pymoo` 默认最小化所有目标。
+    -   **用途**: 用于 NSGA-II。
+
+### `pymoo` 与 `pyswarms` 封装
+
+-   **`CombinationProblem`**: `pymoo` 的 `Problem` 子类，将上述评估函数与优化框架连接起来。
+
+-   **`PymooSingleObjectiveGA`**: 使用 `pymoo` 的遗传算法寻找单目标最优解。
+-   **`PymooNSGAII`**: 使用 `pymoo` 的 NSGA-II 算法寻找多目标帕累托前沿。
+-   **`PySwarmsPSO`**: 使用 `pyswarms` 的粒子群算法寻找单目标最优解。
+
+---
+
+## `main.py` - 程序入口与流程控制
+
+### 核心执行函数
+
+-   **`run_single_objective_algorithms(ingredients)`**:
+    -   **流程**:
+        1.  初始化并运行 `PymooSingleObjectiveGA`。
+        2.  初始化并运行 `PySwarmsPSO`。
+        3.  打印两种算法找到的最佳候选解。
+
+-   **`run_nsga(ingredients, toxicity_weight)`**:
+    -   **流程**:
+        1.  初始化并运行 `PymooNSGAII`，得到帕累托前沿上的多个候选解。
+        2.  打印所有非支配解。
+        3.  使用 `select_candidate_by_weighted_sum` 从帕累托前沿中选择一个“折衷”最优解。
+
+### 辅助函数
+
+-   `sample_ingredients()`: 提供一组硬编码的示例成分数据，用于快速测试。
+-   `describe_candidate(label, candidate, ingredients)`: 一个格式化打印函数，用于清晰地展示候选解的各项指标和成分配比。
+
+### 程序主入口
+
+-   **`main()`**:
+    1.  调用 `sample_ingredients()` 加载数据。
+    2.  执行 `run_single_objective_algorithms`。
+    3.  执行 `run_nsga`。
