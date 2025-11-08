@@ -11,12 +11,102 @@ from algorithms import (
 def sample_ingredients() -> list[Ingredient]:
     """返回示例成分列表，用于算法演示。"""
     return [
-        Ingredient("黄芩素", "黄芩", hepatotoxicity_score=0.3, synergy_baseline=0.9, ob=35.0, dl=0.18),
-        Ingredient("川芎嗪", "川芎", hepatotoxicity_score=0.2, synergy_baseline=0.85, ob=32.0, dl=0.09),
-        Ingredient("黄连碱", "黄连", hepatotoxicity_score=0.5, synergy_baseline=0.95, ob=26.0, dl=0.12),
-        Ingredient("丹参酮", "丹参", hepatotoxicity_score=0.15, synergy_baseline=0.7, ob=45.0, dl=0.26),
-        Ingredient("甘草酸", "甘草", hepatotoxicity_score=0.4, synergy_baseline=0.75, ob=28.0, dl=0.11),
-        Ingredient("白芍苷", "白芍", hepatotoxicity_score=0.18, synergy_baseline=0.68, ob=38.0, dl=0.14),
+        Ingredient(
+            "黄芩素",
+            "黄芩",
+            hepatotoxicity_score=0.3,
+            synergy_baseline=0.9,
+            ob=35.0,
+            dl=0.18,
+            mw=270.2,
+            alogp=2.1,
+            h_don=3,
+            h_acc=5,
+            caco2=0.82,
+            bbb=-0.3,
+            fasa=0.33,
+            hl=6.5,
+        ),
+        Ingredient(
+            "川芎嗪",
+            "川芎",
+            hepatotoxicity_score=0.2,
+            synergy_baseline=0.85,
+            ob=32.0,
+            dl=0.09,
+            mw=136.2,
+            alogp=0.3,
+            h_don=1,
+            h_acc=2,
+            caco2=1.1,
+            bbb=0.2,
+            fasa=0.28,
+            hl=3.5,
+        ),
+        Ingredient(
+            "黄连碱",
+            "黄连",
+            hepatotoxicity_score=0.5,
+            synergy_baseline=0.95,
+            ob=26.0,
+            dl=0.12,
+            mw=336.4,
+            alogp=1.5,
+            h_don=0,
+            h_acc=4,
+            caco2=0.4,
+            bbb=-0.7,
+            fasa=0.48,
+            hl=8.0,
+        ),
+        Ingredient(
+            "丹参酮",
+            "丹参",
+            hepatotoxicity_score=0.15,
+            synergy_baseline=0.7,
+            ob=45.0,
+            dl=0.26,
+            mw=294.3,
+            alogp=3.1,
+            h_don=0,
+            h_acc=4,
+            caco2=1.2,
+            bbb=0.5,
+            fasa=0.22,
+            hl=10.5,
+        ),
+        Ingredient(
+            "甘草酸",
+            "甘草",
+            hepatotoxicity_score=0.4,
+            synergy_baseline=0.75,
+            ob=28.0,
+            dl=0.11,
+            mw=822.0,
+            alogp=1.2,
+            h_don=5,
+            h_acc=16,
+            caco2=0.2,
+            bbb=-1.2,
+            fasa=0.62,
+            hl=4.0,
+        ),
+        Ingredient(
+            "白芍苷",
+            "白芍",
+            hepatotoxicity_score=0.18,
+            synergy_baseline=0.68,
+            ob=38.0,
+            dl=0.14,
+            mw=480.4,
+            alogp=-1.1,
+            h_don=6,
+            h_acc=11,
+            caco2=0.35,
+            bbb=-0.9,
+            fasa=0.58,
+            hl=5.5,
+        ),
     ]
 
 
@@ -28,9 +118,9 @@ def describe_candidate(label: str, candidate: CandidateSolution, ingredients: li
         candidate: 要展示的组合。
         ingredients: 成分清单。
     """
-    synergy, toxicity, penalty = evaluate_metrics(candidate, ingredients)
+    aci, toxicity, penalty = evaluate_metrics(candidate, ingredients)
     selected = [ingredients[idx].name for idx in candidate.iter_selected_indices()]
-    print(f"{label}：协同 {synergy:.3f}，肝毒性 {toxicity:.3f}，惩罚 {penalty:.2f}，配伍 {selected}")
+    print(f"{label}：ACI {aci:.3f}，肝毒性 {toxicity:.3f}，惩罚 {penalty:.2f}，配伍 {selected}")
 
 
 def run_single_objective_algorithms(ingredients: list[Ingredient]) -> list[CandidateSolution]:
@@ -62,10 +152,10 @@ def run_nsga(ingredients: list[Ingredient]) -> None:
     solutions, metrics = nsga.run()
     print("\nNSGA-II 非支配集候选：")
     for idx, (candidate, metric) in enumerate(zip(solutions, metrics), 1):
-        synergy = -metric[0]
+        aci = -metric[0]
         toxicity = metric[1]
         penalty = evaluate_metrics(candidate, ingredients)[2]
-        print(f"  {idx}. 协同 {synergy:.3f}，肝毒性 {toxicity:.3f}，惩罚 {penalty:.2f}")
+        print(f"  {idx}. ACI {aci:.3f}，肝毒性 {toxicity:.3f}，惩罚 {penalty:.2f}")
 
 
 def main() -> None:

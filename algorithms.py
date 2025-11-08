@@ -62,16 +62,71 @@ class Ingredient:
         herb: 所属中药名。
         hepatotoxicity_score: SwissADME 肝毒性打分（越高越差）。
         synergy_baseline: 协同贡献基线（用于加权模型）。
-        ob: 口服生物利用度（可选）。
-        dl: 类药性指标（可选）。
+        ob: Oral Bioavailability，若缺失可置 None。
+        dl: Drug Likeness，若缺失可置 None。
+        mw: 分子量 (MW)。
+        alogp: ALogP（脂溶性）。
+        h_don: 氢键供体数量。
+        h_acc: 氢键受体数量。
+        caco2: Caco-2 渗透性（可用 logPapp）。
+        bbb: 血脑屏障穿透（logBB）。
+        fasa: FASA- 极性表面积比。
+        hl: 半衰期（小时）。
     """
 
     name: str
     herb: str
     hepatotoxicity_score: float
     synergy_baseline: float
-    ob: float = 0.0
-    dl: float = 0.0
+    ob: float | None = None
+    dl: float | None = None
+    mw: float | None = None
+    alogp: float | None = None
+    h_don: float | None = None
+    h_acc: float | None = None
+    caco2: float | None = None
+    bbb: float | None = None
+    fasa: float | None = None
+    hl: float | None = None
+
+
+@dataclass(frozen=True)
+class FeatureWindow:
+    """用于定义 ADME 特征的“宜居区”。"""
+
+    lower: float
+    upper: float
+    softness: float
+
+
+ADME_FEATURE_ATTRS: dict[str, str] = {
+    "mw": "mw",
+    "alogp": "alogp",
+    "hdon": "h_don",
+    "hacc": "h_acc",
+    "ob": "ob",
+    "caco2": "caco2",
+    "bbb": "bbb",
+    "dl": "dl",
+    "fasa": "fasa",
+    "hl": "hl",
+}
+
+FEATURE_WINDOWS: dict[str, FeatureWindow] = {
+    "mw": FeatureWindow(180.0, 500.0, 120.0),
+    "alogp": FeatureWindow(-0.5, 5.0, 1.5),
+    "hdon": FeatureWindow(0.0, 5.0, 2.0),
+    "hacc": FeatureWindow(0.0, 10.0, 3.0),
+    "ob": FeatureWindow(30.0, 70.0, 15.0),
+    "caco2": FeatureWindow(0.4, 1.5, 0.3),
+    "bbb": FeatureWindow(-1.0, 1.0, 0.5),
+    "dl": FeatureWindow(0.18, 0.5, 0.1),
+    "fasa": FeatureWindow(0.2, 0.6, 0.15),
+    "hl": FeatureWindow(3.0, 12.0, 3.0),
+}
+
+ACI_LAMBDA = 0.3
+_SAFE_EPS = 1e-6
 
 
 BITS_PER_BYTE = 8
@@ -159,21 +214,92 @@ def vector_to_candidate(vector: Sequence[float], ingredients: Sequence[Ingredien
     return CandidateSolution.from_components(selects, proportions)
 
 
-def compute_loew_synergy(candidate: CandidateSolution, ingredients: Sequence[Ingredient]) -> float:
-    """Loewe 指标的近似：配比加权协同基线。
+def _window_score(value: float, window: FeatureWindow) -> float:
+    """根据 FeatureWindow 计算单一特征的得分。"""
 
-    Args:
-        candidate: 已归一化组合。
-        ingredients: 成分数据集。
+    if window.lower <= value <= window.upper:
+        return 1.0
+    delta = window.lower - value if value < window.lower else value - window.upper
+    return math.exp(-((delta / max(window.softness, _SAFE_EPS)) ** 2))
 
-    Returns:
-        加权协同得分。
-    """
-    synergy = 0.0
+
+def _normalized_feature_value(feature: str, value: float | None) -> float | None:
+    """将原始特征值映射到 0-1 区间；缺失值返回 None。"""
+
+    if value is None:
+        return None
+    window = FEATURE_WINDOWS.get(feature)
+    if window is None:
+        return None
+    return _window_score(value, window)
+
+
+def compute_desirability_score(ingredient: Ingredient) -> float:
+    """计算单体可用性分（几何平均）。"""
+
+    scores: list[float] = []
+    for feature, attr in ADME_FEATURE_ATTRS.items():
+        value = getattr(ingredient, attr)
+        normalized = _normalized_feature_value(feature, value)
+        if normalized is not None:
+            scores.append(max(normalized, _SAFE_EPS))
+    if not scores:
+        return 0.0
+    product = 1.0
+    for score in scores:
+        product *= score
+    return product ** (1 / len(scores))
+
+
+def compute_complementarity_score(candidate: CandidateSolution, ingredients: Sequence[Ingredient]) -> float:
+    """根据特征多样性计算组合互补性。"""
+
+    feature_diversities: list[float] = []
+    for feature, attr in ADME_FEATURE_ATTRS.items():
+        values: list[float] = []
+        weights: list[float] = []
+        for select, proportion, ingredient in zip(candidate.iter_selects(), candidate.proportions, ingredients):
+            if not select:
+                continue
+            normalized = _normalized_feature_value(feature, getattr(ingredient, attr))
+            if normalized is None:
+                continue
+            values.append(normalized)
+            weights.append(proportion)
+        if len(values) <= 1:
+            continue
+        weights_arr = np.array(weights, dtype=float)
+        total = weights_arr.sum()
+        if total <= 0:
+            continue
+        weights_arr /= total
+        values_arr = np.array(values, dtype=float)
+        mean = float(np.dot(weights_arr, values_arr))
+        variance = float(np.dot(weights_arr, (values_arr - mean) ** 2))
+        feature_diversities.append(min(1.0, variance / 0.25))
+    if not feature_diversities:
+        return 0.0
+    return float(sum(feature_diversities) / len(feature_diversities))
+
+
+def compute_aci_score(candidate: CandidateSolution, ingredients: Sequence[Ingredient], lambda_weight: float = ACI_LAMBDA) -> float:
+    """计算基于 ADME 特征的 ACI 指标。"""
+
+    desirabilities: list[tuple[float, float]] = []
     for select, proportion, ingredient in zip(candidate.iter_selects(), candidate.proportions, ingredients):
-        if select:
-            synergy += ingredient.synergy_baseline * proportion
-    return synergy
+        if not select:
+            continue
+        desirability = compute_desirability_score(ingredient)
+        desirabilities.append((proportion, desirability))
+    if not desirabilities:
+        return 0.0
+    total_prop = sum(weight for weight, _ in desirabilities)
+    if total_prop <= 0:
+        return 0.0
+    weighted_mean = sum(weight * desirability for weight, desirability in desirabilities) / total_prop
+    complementarity = compute_complementarity_score(candidate, ingredients)
+    lambda_weight = max(0.0, min(1.0, lambda_weight))
+    return (1 - lambda_weight) * weighted_mean + lambda_weight * complementarity
 
 
 def compute_hepatotoxicity_score(candidate: CandidateSolution, ingredients: Sequence[Ingredient]) -> float:
@@ -215,25 +341,25 @@ def diversity_penalty(candidate: CandidateSolution, ingredients: Sequence[Ingred
 
 
 def evaluate_metrics(candidate: CandidateSolution, ingredients: Sequence[Ingredient]) -> Tuple[float, float, float]:
-    """返回 (协同, 肝毒性, 惩罚)。
+    """返回 (ACI, 肝毒性, 惩罚)。
 
     Args:
         candidate: 当前组合。
         ingredients: 成分列表。
 
     Returns:
-        (协同得分, 肝毒性, 惩罚)
+        (ACI, 肝毒性, 惩罚)
     """
     normalized_candidate = candidate.with_normalized()
-    synergy = compute_loew_synergy(normalized_candidate, ingredients)
+    aci = compute_aci_score(normalized_candidate, ingredients)
     toxicity = compute_hepatotoxicity_score(normalized_candidate, ingredients)
     penalty = diversity_penalty(normalized_candidate, ingredients)
-    synergy_with_penalty = synergy * (1 - penalty)
-    return synergy_with_penalty, toxicity, penalty
+    aci_with_penalty = aci * (1 - penalty)
+    return aci_with_penalty, toxicity, penalty
 
 
 def single_objective_score(candidate: CandidateSolution, ingredients: Sequence[Ingredient], toxicity_weight: float = 1.0) -> float:
-    """单目标评价：协同 - toxicity_weight * 肝毒性。
+    """单目标评价：ACI - toxicity_weight * 肝毒性。
 
     Args:
         candidate: 当前候选。
@@ -243,30 +369,30 @@ def single_objective_score(candidate: CandidateSolution, ingredients: Sequence[I
     Returns:
         复方综合得分（越高越优）。
     """
-    synergy, toxicity, _ = evaluate_metrics(candidate, ingredients)
-    return synergy - toxicity_weight * toxicity
+    aci, toxicity, _ = evaluate_metrics(candidate, ingredients)
+    return aci - toxicity_weight * toxicity
 
 
 def multi_objective_score(candidate: CandidateSolution, ingredients: Sequence[Ingredient]) -> Tuple[float, float]:
-    """返回 (协同, 肝毒性)。
+    """返回 (ACI, 肝毒性)。
 
     Args:
         candidate: 当前组合。
         ingredients: 成分列表。
 
     Returns:
-        (协同得分, 肝毒性)。
+        (ACI, 肝毒性)。
     """
-    synergy, toxicity, _ = evaluate_metrics(candidate, ingredients)
-    return synergy, toxicity
+    aci, toxicity, _ = evaluate_metrics(candidate, ingredients)
+    return aci, toxicity
 
 
 class CombinationProblem(ElementwiseProblem):
-    """pymoo 兼容问题定义，用于描述复方的选择+配比变量与协同/毒性目标。
+    """pymoo 兼容问题定义，用于描述复方的选择+配比变量与 ACI/毒性目标。
 
     Args:
         ingredients: 候选成分列表。
-        mode: \"single\" 表示单目标（协同 - 毒性），\"multi\" 表示多目标。
+        mode: \"single\" 表示单目标（ACI - 毒性），\"multi\" 表示多目标。
         toxicity_weight: 仅在单目标模式下生效，表示肝毒性惩罚权重。
     """
 
@@ -286,15 +412,15 @@ class CombinationProblem(ElementwiseProblem):
             out: 输出 dict，pymoo 要求填入 \"F\"。
         """
         candidate = vector_to_candidate(x, self.ingredients)
-        synergy, toxicity = multi_objective_score(candidate, self.ingredients)
+        aci, toxicity = multi_objective_score(candidate, self.ingredients)
         if self.mode == "single":
-            out["F"] = np.array([- (synergy - self.toxicity_weight * toxicity)])
+            out["F"] = np.array([-(aci - self.toxicity_weight * toxicity)])
         else:
-            out["F"] = np.array([-synergy, toxicity])
+            out["F"] = np.array([-aci, toxicity])
 
 
 class PymooSingleObjectiveGA:
-    """使用 pymoo GA 处理单目标优化（协同 - 毒性）。"""
+    """使用 pymoo GA 处理单目标优化（ACI - 毒性）。"""
 
     def __init__(
         self,
@@ -333,7 +459,7 @@ class PymooNSGAII:
 
         Returns:
             solutions: 输入向量转化的 CandidateSolution 列表。
-            np.ndarray: 每个 solution 的目标值（协同取负 + 肝毒性）。
+            np.ndarray: 每个 solution 的目标值（ACI 取负 + 肝毒性）。
         """
         result = minimize(self.problem, self.algorithm, termination=("n_gen", self.generations), verbose=False)
         solutions = [vector_to_candidate(x, self.problem.ingredients) for x in result.X]
