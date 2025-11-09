@@ -20,7 +20,7 @@
   - `python main.py` → 输出 `Hello from noname!`
 - 演示模式（需安装额外依赖并具备可写目录）：
   - 使用内置示例：`python main.py --mode demo`
-- 指定外部成分文件：
+  - 指定外部成分文件：
     - CSV：`python main.py --mode demo --ingredients resources/templates/ingredients.csv --format csv`
     - JSON：`python main.py --mode demo --ingredients resources/templates/ingredients.json --format json`
     - 自动按扩展名推断：`--format auto`（默认）
@@ -29,6 +29,30 @@
 - 必需：`name`；且 `smiles` 与 `hepatotoxicity_score` 至少其一存在
 - 可选：`ob, dl, mw, alogp, h_don, h_acc, caco2, bbb, fasa, hl`
   - `bbb` 可用 0/1、true/false 或 logBB 数值表示
+
+## 接口速览（Python）
+
+从 CSV/JSON 读取药物成分，并调用算法：
+
+```python
+from algorithms import load_ingredients, PymooNSGAII, select_candidate_by_weighted_sum
+
+ingredients = load_ingredients("resources/templates/ingredients.csv", fmt="csv")
+
+nsga = PymooNSGAII(ingredients)
+solutions, metrics = nsga.run()
+best, info = select_candidate_by_weighted_sum(solutions, ingredients, toxicity_weight=1.0)
+print(info)
+```
+
+在脚本中直接运行演示：
+
+```python
+import main
+main.main(["--mode", "demo", "--ingredients", "resources/templates/ingredients.json", "--format", "json"])
+```
+
+说明：依赖较重的库（numpy/pymoo/pyswarms/matplotlib/dilipred）均为惰性导入，仅在对应功能被调用时才需要安装。
 
 ### Lint 与自动修复
 
@@ -111,20 +135,73 @@ ACI 的计算公式如下：
 
 其中 `λ` 是一个权重因子，用于平衡可用性与互补性的重要性（默认为 0.3）。
 
-## 配置
+## 配置（config/algorithms.json）
 
-所有算法相关的参数均在 `config/algorithms.json` 中定义。
+所有算法相关的参数均在 `config/algorithms.json` 中定义；若文件缺失，则使用内置默认值。加载逻辑支持“深合并”，仅需覆盖需要变更的键即可（参见 `algorithms._deep_update`）。
 
-### ACI 相关参数
+示例（与当前默认一致）：
 
-- `lambda_weight`: ACI 公式中的 `λ` 权重。
-- `complement_variance_max`: 用于归一化互补性分数的方差上限。
-- `coverage_floor`: 特征覆盖度的下限，用于惩罚数据缺失过多的成分。
+```
+{
+  "ga": {
+    "generations": 25,
+    "population_size": 32,
+    "toxicity_weight": 1.0
+  },
+  "nsga2": {
+    "generations": 30,
+    "population_size": 40
+  },
+  "pso": {
+    "iterations": 40,
+    "swarm_size": 24,
+    "options": { "c1": 1.2, "c2": 1.2, "w": 0.6 }
+  },
+  "aci": {
+    "lambda_weight": 0.3,
+    "complement_variance_max": 0.25,
+    "coverage_floor": 0.0
+  }
+}
+```
 
-### 优化算法参数
+参数说明（按模块）：
 
-- **GA/NSGA-II**: `generations`, `pop_size`
-- **PSO**: `n_particles`, `iters`, `options`
+- `ga`（单目标遗传算法，Pymoo GA）
+  - `generations`（int）：进化代数；越大搜索越充分、耗时越长。建议 20–200。
+  - `population_size`（int）：种群规模；影响多样性与计算量。建议 16–128。
+  - `toxicity_weight`（float）：单目标适应度 `ACI - toxicity_weight * 肝毒性` 的惩罚权重。范围 [0, +∞)。
+
+- `nsga2`（多目标，Pymoo NSGA-II）
+  - `generations`（int）：进化代数。建议 20–200。
+  - `population_size`（int）：种群规模。建议 32–200。
+
+- `pso`（单目标，PySwarms PSO）
+  - `iterations`（int）：迭代轮数。建议 20–200。
+  - `swarm_size`（int）：粒子数量。建议 16–128。
+  - `options`（object）：PSO 超参数
+    - `c1`（float）：个体学习因子（cognitive）；偏大易早收敛，偏小探索更多。常见 0.5–2.5。
+    - `c2`（float）：群体学习因子（social）；与 `c1` 一起决定收敛/发散趋势。常见 0.5–2.5。
+    - `w`（float）：惯性权重；较大更关注全局搜索，较小更精细局部搜索。常见 0.3–0.9。
+
+- `aci`（指标权重与归一化）
+  - `lambda_weight`（float）：ACI = (1-λ)*平均可用性 + λ*互补性 的权重 λ，范围 [0,1]；默认 0.3。
+  - `complement_variance_max`（float）：互补性方差归一化上限；越小越容易获得较高互补性分数。默认 0.25。
+  - `coverage_floor`（float）：可用性分的特征覆盖度下限（[0,1]），用于惩罚特征缺失。默认 0.0。
+
+使用建议：
+- 小数据/快速预览：降低 `generations/iterations` 与 `population_size/swam_size`。
+- 更重探索：增大 `population_size/swam_size` 与 `generations/iterations`；NSGA-II 更适合探索折衷解集。
+- 偏向安全性：增大 `ga.toxicity_weight`；或在最终选择时提高权重。
+- 偏向多样性：增大 `aci.lambda_weight`；或提高 `pso.options.w` 增强全局搜索。
+
+只覆盖想变更的键即可，例如仅调 GA 的种群规模：
+
+```
+{
+  "ga": { "population_size": 64 }
+}
+```
 
 ## 示例输出
 

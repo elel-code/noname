@@ -1,80 +1,94 @@
-# API 文档
+# API 文档（更新）
 
-本文档提供了 `algorithms.py` 和 `main.py` 中主要类和函数的详细说明。
+本文档描述 `algorithms.py` 与 `main.py` 的主要类型与函数，并补充新增的“成分读取接口”。
 
 ---
 
-## `algorithms.py` - 核心算法与评估
+## algorithms.py
 
 ### 数据结构
 
--   **`Ingredient`**: 一个 `dataclass`，用于存储单个成分的所有相关信息。
-    -   **字段**: `name`, `host_drug`, `hepatotoxicity_score`, `synergy_baseline`, 以及多个 ADME 特征（`MW`, `AlogP`, 等）。
-    -   **作用**: 作为整个系统的基础数据单元。
+- `Ingredient`（dataclass）
+  - 字段：
+    - 标识与来源：`name: str`、`smiles: str | None`
+    - 安全性：`hepatotoxicity_score: float | None`
+    - ADME：`ob, dl, mw, alogp, h_don, h_acc, caco2, bbb, fasa, hl`（均为 `float | None`）
+  - 行为：
+    - 若未提供 `hepatotoxicity_score` 且存在 `smiles`，在 `__post_init__` 中自动估算（优先 DILIPred，不可用则使用启发式）。
 
--   **`CandidateSolution`**: 表示一个候选的成分组合。
-    -   **结构**: 内部包含一个布尔列表 `select_bits` (决定哪些成分被选中) 和一个浮点数数组 `proportions` (存储各成分的配比)。
-    -   **主要方法**:
-        -   `from_components()`: 从指定的成分和配比创建实例。
-        -   `iter_selects()`: 迭代选中的成分及其配比。
-        -   `normalized_proportions()`: 返回归一化后的配比。
+- `CandidateSolution`
+  - 结构：`select_bits: bytearray`（位存储选择）、`proportions: array('f')`（配比）、`length: int`
+  - 方法：`from_components(selects, proportions)`、`iter_selects()`、`iter_selected_indices()`、`normalized_proportions()`、`with_normalized()`
 
-### ACI 与肝毒性评估函数
+### 数据读取接口（新增）
 
-这些函数接收一个 `CandidateSolution` 和成分列表，计算特定的性能指标。
+- `load_ingredients_csv(path: str | Path, encoding='utf-8') -> list[Ingredient]`
+  - 支持常见同义列名（不区分大小写），至少需要 `name`，且 `smiles` 与 `hepatotoxicity_score` 至少其一存在。
+  - `bbb` 既可为 0/1 或 true/false，也可为 logBB 数值。
 
--   `compute_desirability_score(ingredient)`: 计算单个成分的“可用性”分数。
--   `compute_complementarity_score(candidate, ingredients)`: 计算组合的“互补性”分数。
--   `compute_aci_score(candidate, ...)`: 结合可用性和互补性，计算最终的 ACI 分数。
--   `compute_hepatotoxicity_score(candidate, ...)`: 计算组合的加权肝毒性分数。
+- `load_ingredients_json(path: str | Path, encoding='utf-8') -> list[Ingredient]`
+  - 期望 JSON 根为数组；键名支持与 CSV 相同的同义映射。
 
-### 优化目标函数
+- `load_ingredients(path: str | Path, fmt: str | None = None, encoding='utf-8') -> list[Ingredient]`
+  - 通用入口；`fmt` 为 `csv/json/None(auto)`；当 `fmt=None` 时按扩展名推断。
 
-这些函数定义了遗传算法和粒子群优化的目标。
+示例：
+```python
+from algorithms import load_ingredients
+ings = load_ingredients("resources/templates/ingredients.csv", fmt="csv")
+```
 
--   **`single_objective_score(candidate, ...)`**: 单目标优化函数。
-    -   **公式**: `ACI - (toxicity_weight * 肝毒性)`
-    -   **用途**: 用于 GA 和 PSO。
+### 评估与指标
 
--   **`multi_objective_score(candidate, ...)`**: 多目标优化函数。
-    -   **返回**: `(-ACI, 肝毒性)`
-    -   **注意**: 返回 `-ACI` 是因为 `pymoo` 默认最小化所有目标。
-    -   **用途**: 用于 NSGA-II。
+- `compute_desirability_score(ingredient) -> float`
+- `compute_complementarity_score(candidate, ingredients) -> float`
+- `compute_aci_score(candidate, ingredients, lambda_weight=None) -> float`
+- `compute_hepatotoxicity_score(candidate, ingredients) -> float`
+- `evaluate_metrics(candidate, ingredients) -> (aci_with_penalty, toxicity, penalty, aci_raw)`
+- `diversity_penalty(candidate, ingredients) -> float`
 
-### `pymoo` 与 `pyswarms` 封装
+### 目标函数
 
--   **`CombinationProblem`**: `pymoo` 的 `Problem` 子类，将上述评估函数与优化框架连接起来。
+- `single_objective_score(candidate, ingredients, toxicity_weight=1.0) -> float`
+- `multi_objective_score(candidate, ingredients) -> (aci, toxicity)`
 
--   **`PymooSingleObjectiveGA`**: 使用 `pymoo` 的遗传算法寻找单目标最优解。
--   **`PymooNSGAII`**: 使用 `pymoo` 的 NSGA-II 算法寻找多目标帕累托前沿。
--   **`PySwarmsPSO`**: 使用 `pyswarms` 的粒子群算法寻找单目标最优解。
+### 算法封装
+
+- `CombinationProblem`（pymoo 兼容问题定义）
+- `PymooSingleObjectiveGA(ingredients, ...)` → `.run() -> CandidateSolution`
+- `PymooNSGAII(ingredients, ...)` → `.run() -> list[CandidateSolution], np.ndarray`
+- `PySwarmsPSO(ingredients, ...)` → `.run() -> CandidateSolution`
+
+注意：numpy/pymoo/pyswarms/dilipred 均惰性导入，仅在使用到相应功能时才需要环境已安装依赖。
 
 ---
 
-## `main.py` - 程序入口与流程控制
+## main.py
 
-### 核心执行函数
+### CLI
 
--   **`run_single_objective_algorithms(ingredients)`**:
-    -   **流程**:
-        1.  初始化并运行 `PymooSingleObjectiveGA`。
-        2.  初始化并运行 `PySwarmsPSO`。
-        3.  打印两种算法找到的最佳候选解。
+- `--mode {hello,demo}`：默认 `hello`（无需依赖），`demo` 需安装优化与可视化依赖
+- `--ingredients PATH`：成分文件路径（CSV/JSON）
+- `--format {auto,csv,json}`：文件格式，默认 `auto`
 
--   **`run_nsga(ingredients, toxicity_weight)`**:
-    -   **流程**:
-        1.  初始化并运行 `PymooNSGAII`，得到帕累托前沿上的多个候选解。
-        2.  打印所有非支配解。
-        3.  使用 `select_candidate_by_weighted_sum` 从帕累托前沿中选择一个“折衷”最优解。
+### 关键函数
 
-### 辅助函数
+- `run_single_objective_algorithms(ingredients) -> (list[CandidateSolution], float)`
+- `run_nsga(ingredients, toxicity_weight, highlight_points=None) -> None`
+- `run_demo(ingredients: list[Ingredient] | None = None) -> int`
+- `main(argv: list[str] | None = None) -> int`
 
--   `sample_ingredients()`: 提供一组硬编码的示例成分数据，用于快速测试。
--   `describe_candidate(label, candidate, ingredients)`: 一个格式化打印函数，用于清晰地展示候选解的各项指标和成分配比。
+示例：
+```bash
+python main.py --mode demo --ingredients resources/templates/ingredients.json --format json
+```
 
-### 程序主入口
+---
 
--   **`main()`**:
-    1.  调用 `sample_ingredients()` 加载数据。
-    2.  执行 `run_single_objective_algorithms`。
-    3.  执行 `run_nsga`。
+## 附录：字段同义映射（节选）
+
+- `name`: name/ingredient/compound/drug/名称/成分
+- `smiles`: smiles/smile
+- `hepatotoxicity_score`: hepatotoxicity/hepatotoxicity_score/dili/toxicity/toxicity_score
+- `bbb`: bbb/logbb/bloodbrainbarrier（允许 0/1/true/false 或数值）
+- 其他：`ob, dl, mw, alogp, h_don(hbd), h_acc(hba), caco2(logpapp/papp), fasa, hl(half_life/t_half)`
