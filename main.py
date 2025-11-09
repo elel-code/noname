@@ -216,8 +216,8 @@ def run_demo() -> int:
     from algorithms import evaluate_metrics
 
     for label, candidate in zip(("GA 最优", "PSO 最优"), single_objective_results):
-        aci, toxicity, _, _ = evaluate_metrics(candidate, ingredients)
-        highlight_points.append((label, toxicity, aci))
+        _, toxicity, _, aci_raw = evaluate_metrics(candidate, ingredients)
+        highlight_points.append((label, toxicity, aci_raw))
     # 单目标权重会作为多目标加权依据，形成闭环体验。
     run_nsga(ingredients, toxicity_weight, highlight_points)
     return 0
