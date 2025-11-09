@@ -1,17 +1,20 @@
-from algorithms import (
-    CandidateSolution,
-    Ingredient,
-    PymooNSGAII,
-    PymooSingleObjectiveGA,
-    PySwarmsPSO,
-    evaluate_metrics,
-    select_candidate_by_weighted_sum,
-)
-from visualization import configure_matplotlib_fonts, render_nsga_visualizations
+from __future__ import annotations
+
+import argparse
+import sys
+
+# 说明：
+# - 将重依赖（pymoo/pyswarms/matplotlib 等）的导入延迟到函数内部，
+#   使得项目在未安装这些依赖的环境中仍可默认运行（hello 模式）。
+# - 若使用 demo 模式，则按需导入并运行原有优化与可视化流程。
 
 
-def sample_ingredients() -> list[Ingredient]:
+def sample_ingredients() -> list["Ingredient"]:
     """返回示例成分列表，用于算法演示。"""
+
+    # 延迟导入，避免默认模式下的依赖报错
+    from algorithms import Ingredient
+
     return [
         Ingredient(
             "黄芩素",
@@ -105,7 +108,7 @@ def sample_ingredients() -> list[Ingredient]:
     ]
 
 
-def describe_candidate(label: str, candidate: CandidateSolution, ingredients: list[Ingredient]) -> None:
+def describe_candidate(label: str, candidate: "CandidateSolution", ingredients: list["Ingredient"]) -> None:
     """打印候选结果的指标与具体成分选取。
 
     Args:
@@ -113,6 +116,9 @@ def describe_candidate(label: str, candidate: CandidateSolution, ingredients: li
         candidate: 要展示的组合。
         ingredients: 成分清单。
     """
+    # 延迟导入以避免默认模式触发依赖
+    from algorithms import evaluate_metrics
+
     aci_penalized, toxicity, penalty, aci_raw = evaluate_metrics(candidate, ingredients)
     normalized = candidate.with_normalized()
     mix = []
@@ -126,10 +132,7 @@ def describe_candidate(label: str, candidate: CandidateSolution, ingredients: li
         f"肝毒性 {toxicity:.3f}，惩罚 {penalty:.2f}，配伍 {mix_repr}"
     )
 
-
-
-
-def run_single_objective_algorithms(ingredients: list[Ingredient]) -> tuple[list[CandidateSolution], float]:
+def run_single_objective_algorithms(ingredients: list["Ingredient"]) -> tuple[list["CandidateSolution"], float]:
     """执行 pymoo GA 与 pyswarms PSO，并返回两个最优解用于对比。
 
     Args:
@@ -138,15 +141,20 @@ def run_single_objective_algorithms(ingredients: list[Ingredient]) -> tuple[list
     Returns:
         [GA 最优, PSO 最优]。
     """
+    # 延迟导入
+    from algorithms import PymooSingleObjectiveGA, PySwarmsPSO
+
     ga = PymooSingleObjectiveGA(ingredients)
     pso = PySwarmsPSO(ingredients)
     # 两种算法分别返回单目标最优解，用以展示不同启发式在相同指标下的表现差异。
     best_ga = ga.run()
     best_pso = pso.run()
     return [best_ga, best_pso], ga.toxicity_weight
-
-
-def run_nsga(ingredients: list[Ingredient], toxicity_weight: float, highlight_points: list[tuple[str, float, float]] | None = None) -> None:
+def run_nsga(
+    ingredients: list["Ingredient"],
+    toxicity_weight: float,
+    highlight_points: list[tuple[str, float, float]] | None = None,
+) -> None:
     """运行 NSGA-II 并打印非支配集候选的指标，并按权重挑选一个候选。
 
     Args:
@@ -155,6 +163,10 @@ def run_nsga(ingredients: list[Ingredient], toxicity_weight: float, highlight_po
     Returns:
         None
     """
+    # 延迟导入
+    from algorithms import PymooNSGAII, evaluate_metrics, select_candidate_by_weighted_sum
+    from visualization import render_nsga_visualizations
+
     nsga = PymooNSGAII(ingredients)
     solutions, metrics = nsga.run()
     print("\nNSGA-II 非支配集候选：")
@@ -178,28 +190,61 @@ def run_nsga(ingredients: list[Ingredient], toxicity_weight: float, highlight_po
         f"\n可视化已保存：{artifacts['pareto']}、{artifacts['mix_bar']}、{artifacts['mix_pie']}"
     )
 
+def run_demo() -> int:
+    """运行原演示（包含算法与可视化）。"""
 
-def main() -> None:
-    """主执行逻辑：分别演示单目标与 NSGA-II 多目标输出。
+    try:
+        from visualization import configure_matplotlib_fonts
+    except Exception as e:  # noqa: BLE001 - 直接面向用户的报错提示
+        print(
+            "缺少可视化或相关依赖，无法运行 demo。\n"
+            "请在可写环境下安装依赖后重试（例如：pymoo、pyswarms、matplotlib 等）",
+            file=sys.stderr,
+        )
+        return 2
 
-    Returns:
-        None
-    """
+    configure_matplotlib_fonts()
+
     ingredients = sample_ingredients()
     single_objective_results, toxicity_weight = run_single_objective_algorithms(ingredients)
     print("单目标算法结果：")
     for label, candidate in zip(("遗传算法", "粒子群算法"), single_objective_results):
         describe_candidate(label, candidate, ingredients)
+
     highlight_points: list[tuple[str, float, float]] = []
+    # 延迟导入评估函数，避免默认模式触发依赖
+    from algorithms import evaluate_metrics
+
     for label, candidate in zip(("GA 最优", "PSO 最优"), single_objective_results):
         aci, toxicity, _, _ = evaluate_metrics(candidate, ingredients)
         highlight_points.append((label, toxicity, aci))
     # 单目标权重会作为多目标加权依据，形成闭环体验。
     run_nsga(ingredients, toxicity_weight, highlight_points)
+    return 0
 
 
-configure_matplotlib_fonts()
+def main(argv: list[str] | None = None) -> int:
+    """CLI 入口：
+    - 默认 hello 模式：打印最小可运行输出，满足快速自检。
+    - demo 模式：运行原有算法演示（需要额外依赖与可写目录）。
+    """
+
+    parser = argparse.ArgumentParser(description="noname CLI")
+    parser.add_argument(
+        "--mode",
+        choices=("hello", "demo"),
+        default="hello",
+        help="运行模式：hello（默认）或 demo（需要依赖）",
+    )
+    args = parser.parse_args(argv)
+
+    if args.mode == "hello":
+        print("Hello from noname!")
+        return 0
+
+    # demo 模式
+    return run_demo()
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__":  # pragma: no cover - 直接作为脚本运行
+    raise SystemExit(main())

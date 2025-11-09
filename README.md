@@ -1,6 +1,24 @@
-# 中药成分组合优化模板
+# 中药成分组合优化模板（含最小可运行入口）
 
-该项目演示了如何基于 `pymoo` 和 `pyswarms` 在中药成分集合上进行双目标优化，旨在最大化 **ADME 互补指数 (ACI)** 并最小化 **肝毒性**。
+该项目默认提供“最小可运行”的入口，便于在无依赖/只读环境中快速自检；
+同时保留原有基于 `pymoo` 与 `pyswarms` 的优化演示作为可选模式。
+
+## 快速开始（最小运行）
+
+```bash
+python main.py
+# 输出：
+# Hello from noname!
+```
+
+## 高级用法（演示模式，需要依赖且可写输出目录）
+
+```bash
+python main.py --mode demo
+```
+
+说明：演示模式会按需导入 `pymoo`、`pyswarms`、`matplotlib` 等依赖，并在 `artifacts/` 目录输出可视化图片。
+若缺少依赖或在只读环境中运行，将给出友好提示而不会影响最小入口的可运行性。
 
 ## 项目结构
 
@@ -15,17 +33,14 @@
 └── README.md            # 项目概览（本文）
 ```
 
-## 如何运行
+## 依赖安装（可选）
 
-1. **安装依赖**:
-   ```bash
-   uv sync
-   ```
+如需运行演示模式，请在可写环境中安装相应依赖后重试（版本可根据实际需求调整）：
 
-2. **执行优化**:
-   ```bash
-   python main.py
-   ```
+```bash
+python -m pip install --upgrade pip
+python -m pip install numpy pymoo pyswarms scikit-learn matplotlib dilipred
+```
 
 ## ADME 互补指数 (ACI)
 
