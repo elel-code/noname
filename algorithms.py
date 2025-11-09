@@ -72,7 +72,6 @@ class Ingredient:
         name: 成分名称。
         herb: 所属中药名。
         hepatotoxicity_score: 外部模型/实验给出的肝毒性打分（越高越差）。
-        synergy_baseline: 协同贡献基线（用于加权模型）。
         ob: Oral Bioavailability，若缺失可置 None。
         dl: Drug Likeness，若缺失可置 None。
         mw: 分子量 (MW)。
@@ -88,7 +87,6 @@ class Ingredient:
     name: str
     herb: str
     hepatotoxicity_score: float
-    synergy_baseline: float
     ob: float | None = None
     dl: float | None = None
     mw: float | None = None
@@ -203,12 +201,11 @@ class CandidateSolution:
 
 
 def ensure_selection(selects: List[bool], ingredients: Sequence[Ingredient]) -> List[bool]:
-    """保证至少选中一个成分；若全为 False，则启用协同基线最高的成分以保持可复现。"""
-    if any(selects):
-        return selects
+    """保证至少选中一个成分；若全为 False，则按输入顺序启用首个成分以保持确定性。"""
+    if any(selects) or not ingredients:
+        return list(selects)
     copy = list(selects)
-    best_index = max(range(len(ingredients)), key=lambda idx: ingredients[idx].synergy_baseline)
-    copy[best_index] = True
+    copy[0] = True
     return copy
 
 
