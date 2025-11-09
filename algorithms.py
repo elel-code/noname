@@ -48,6 +48,12 @@ _DEFAULT_ALGO_CONFIG = {
         "output_dir": "artifacts",
         "dpi": 200,
         "colormap": "viridis",
+        # 新增：可视化可调项
+        "figs": ["pareto", "bar", "pie"],  # 可选：pareto/bar/pie/hist/density/radar
+        "img_formats": ["png"],              # 可选：png/svg/pdf
+        "responsive": True,                   # 自适应尺寸
+        "annotate": True,                     # 是否标注高亮点
+        "title_prefix": None,                 # 图表标题前缀
     },
 }
 _ALGO_CONFIG_CACHE: dict | None = None
@@ -850,6 +856,8 @@ class PymooSingleObjectiveGA:
             ingredients, mode="single", toxicity_weight=self.toxicity_weight
         )
         self.algorithm = PymooGAAlg(pop_size=pop, eliminate_duplicates=True)
+        # 收敛历史（每代最佳的正向目标：ACI - w*tox），若可用
+        self.convergence_: list[float] | None = None
 
     def run(self) -> CandidateSolution:
         """执行单目标 GA 并返回最优 candidate。"""
@@ -859,7 +867,23 @@ class PymooSingleObjectiveGA:
             self.algorithm,
             termination=("n_gen", self.generations),
             verbose=False,
+            save_history=True,
         )
+        # 尝试从 history 提取每代最优（将被最小化的负值取反恢复为正向指标）
+        try:
+            conv: list[float] = []
+            history = getattr(result, "history", None)
+            if history:
+                for h in history:
+                    try:
+                        f = h.opt.get("F")
+                        val = float(f[0]) if hasattr(f, "__len__") else float(f)
+                        conv.append(-val)
+                    except Exception:
+                        continue
+            self.convergence_ = conv or None
+        except Exception:
+            self.convergence_ = None
         return vector_to_candidate(result.X, self.problem.ingredients)
 
 
@@ -917,6 +941,8 @@ class PySwarmsPSO:
         self.swarm_size = swarm_size if swarm_size is not None else cfg["swarm_size"]
         self.options = options if options is not None else cfg["options"]
         self.dimensions = len(ingredients) * 2
+        # 收敛历史（每迭代最佳的正向目标：ACI - w*tox）
+        self.convergence_: list[float] | None = None
 
     def _fitness(self, swarm: "np.ndarray") -> "np.ndarray":
         """pyswarms 回调：计算每个粒子的目标值（越小越优）。"""
@@ -941,6 +967,13 @@ class PySwarmsPSO:
         _, best_pos = optimizer.optimize(
             self._fitness, iters=self.iterations, verbose=False
         )
+        try:
+            cost_hist = getattr(optimizer, "cost_history", None)
+            if cost_hist is not None:
+                # cost_history 为被最小化的负目标值，取反为正向指标
+                self.convergence_ = [float(-v) for v in list(cost_hist)]
+        except Exception:
+            self.convergence_ = None
         return vector_to_candidate(best_pos, self.ingredients)
 
 

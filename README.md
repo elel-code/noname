@@ -30,11 +30,41 @@
 - `--output-dir`：可视化输出目录（默认取配置 `viz.output_dir`）
 - `--no-fig`：禁用可视化
 - `--save-metrics`：将 NSGA 候选指标保存为 CSV
+  - CSV 列：`# ACI(+)`, `toxicity`, `penalty`, `mix`（配伍配比字符串）
 - `--precision`：打印指标小数位（默认 3）
 - `--dpi`：图像 DPI（默认取配置或 200）
 - `--colormap`：帕累托前沿 colormap（默认取配置或 viridis）
 - `--font`/`--font-dir`：中文字体名与备选字体目录
 - `--max-candidates`：NSGA 候选解数量上限（优先于配置）
+
+- `--summary-top-k`：打印 Top-K 摘要（按 ACI 与最低毒性），默认 3，`0` 关闭
+- `--export-json`：导出汇总 JSON 路径（含 `count/aci/toxicity/best_weighted`）
+
+### 可视化增强（新增）
+
+- 图表类型选择：`--figs pareto,bar,pie,hist,density,radar`
+- 输出格式选择：`--img-formats png,svg,pdf`
+- 自适应尺寸：`--responsive` / `--no-responsive`
+- 关闭注释：`--no-annotate`
+- 标题前缀：`--title-prefix "实验A-"`
+
+示例：
+
+```
+python main.py --mode demo \
+  --figs pareto,bar,pie,hist,density,radar \
+  --img-formats png,svg \
+  --responsive \
+  --title-prefix "实验A-" \
+  --output-dir artifacts
+```
+
+单目标（GA/PSO）可视化会在未禁用图表（未传 `--no-fig`）时自动生成：
+
+- GA：`ga_best_mix_bar.*`、`ga_best_mix_pie.*`、`ga_convergence.*`
+- PSO：`pso_best_mix_bar.*`、`pso_best_mix_pie.*`、`pso_convergence.*`
+
+说明：`--figs` 控制的是多目标（NSGA）的图型集合；单目标图不受 `--figs` 限制，但受 `--img-formats/--responsive/--title-prefix/--no-fig` 统一控制。
 
 成分字段（列名不区分大小写，支持常见同义名）：
 - 必需：`name`；且 `smiles` 与 `hepatotoxicity_score` 至少其一存在
@@ -118,7 +148,8 @@ python main.py --mode demo
 .
 ├── config/
 │   └── algorithms.json  # 算法超参数与 ACI 配置
-├── main.py              # 主入口：运行优化算法并输出结果
+├── main.py              # 纯 CLI 入口（hello/demo 参数解析）
+├── app.py               # 运行编排：单/多目标流程、文本与图表输出
 ├── algorithms.py        # 核心逻辑：ACI 计算、优化问题定义与算法封装
 ├── ACI.md               # ADME 互补指数 (ACI) 的详细定义
 ├── API_LIST.md          # 主要函数与类的 API 文档
@@ -232,12 +263,43 @@ ACI 的计算公式如下：
 - 黄连碱 (Berberine): 60%
 
 --- 多目标优化 (NSGA-II) 非支配集 ---
-候选 1: ACI=0.92, 肝毒性=0.35
-候选 2: ACI=0.85, 肝毒性=0.20
+候选 1: ACI=0.92, 肝毒性=0.35，配伍 [黄芩素(30.0%), 丹参酮(70.0%)]
+候选 2: ACI=0.85, 肝毒性=0.20，配伍 [黄芩素(40.0%), 黄连碱(60.0%)]
 ...
 
 --- NSGA-II 帕累托前沿加权选择 ---
 [NSGA-II 择优] ACI (修正后): 0.85, 肝毒性: 0.20, 惩罚: 0.0
 - 黄芩素 (Baicalein): 35%
 - 黄连碱 (Berberine): 65%
+
+Top-K（按 ACI 与最低毒性）会同时打印每条的配伍与配比。
+
+如需机器可读汇总，可使用：`--export-json artifacts/summary.json`，示例结构（含逐候选 mix 与最佳解 mix）：
+
+```
+{
+  "count": 24,
+  "aci": [0.85, 0.83, ...],
+  "toxicity": [0.21, 0.18, ...],
+  "solutions": [
+    {
+      "aci": 0.85,
+      "toxicity": 0.21,
+      "penalty": 0.00,
+      "mix": [ { "name": "黄芩素", "percent": 35.0 }, { "name": "黄连碱", "percent": 65.0 } ]
+    },
+    { "aci": 0.83, "toxicity": 0.22, "penalty": 0.00, "mix": [ ... ] }
+  ],
+  "best_weighted": {
+    "score": 0.77,
+    "aci_penalized": 0.74,
+    "aci_raw": 0.81,
+    "toxicity": 0.20,
+    "penalty": 0.00,
+    "mix": [ { "name": "黄芩素", "percent": 35.0 }, { "name": "黄连碱", "percent": 65.0 } ]
+  }
+}
+```
+
+说明：CSV 导出（`--save-metrics`）已包含 `mix` 列；JSON 导出包含逐候选与最佳解的配伍配比，便于程序化分析与复现。
 ```
