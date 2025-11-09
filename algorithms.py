@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import math
-from array import array
 import copy
 import json
+import math
+import warnings
+from array import array
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
+from typing import Any, Iterable, List, Sequence, Tuple
 
+import dilipred
 import numpy as np
 from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.algorithms.soo.nonconvex.ga import GA as PymooGAAlg
@@ -31,6 +33,106 @@ _DEFAULT_ALGO_CONFIG = {
     },
 }
 _ALGO_CONFIG_CACHE: dict | None = None
+_DILIPRED_PREDICTOR: Any | None = None
+
+
+def _normalize_probability(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return None
+        return _normalize_probability(value[0])
+    columns = getattr(value, "columns", None)
+    if columns is not None and "value" in columns:
+        try:
+            series = value["value"]
+            first = series.iloc[0] if hasattr(series, "iloc") else series[0]
+            return float(first)
+        except Exception:
+            pass
+    if isinstance(value, dict):
+        for key in ("probability", "prob", "score", "risk", "dili", "value"):
+            if key in value:
+                return float(value[key])
+    return None
+
+
+def _load_dilipred_predictor_instance() -> Any | None:
+    global _DILIPRED_PREDICTOR
+    if _DILIPRED_PREDICTOR is not None:
+        return _DILIPRED_PREDICTOR
+    for attr in ("DILIPRedictor", "DILIPred", "DILIPredictor", "Predictor", "Model"):
+        factory = getattr(dilipred, attr, None)
+        if callable(factory):
+            try:
+                predictor = factory()
+            except TypeError:
+                continue
+            _DILIPRED_PREDICTOR = predictor
+            return predictor
+    return None
+
+
+def _predict_with_dilipred(smiles: str) -> float | None:
+    if not smiles:
+        return None
+
+    # 直接使用 dilipred 模块所暴露的 Python API；若失败再退化为启发式。
+    for attr in ("predict_smiles", "predict_dili", "predict"):
+        predict_fn = getattr(dilipred, attr, None)
+        if not callable(predict_fn):
+            continue
+        try:
+            result = predict_fn([smiles])
+        except TypeError:
+            result = predict_fn(smiles)
+        score = _normalize_probability(result)
+        if score is not None:
+            return score
+
+    predictor = _load_dilipred_predictor_instance()
+    if predictor is not None:
+        for attr in ("predict_proba", "predict"):
+            predict_fn = getattr(predictor, attr, None)
+            if not callable(predict_fn):
+                continue
+            try:
+                result = predict_fn([smiles])
+            except TypeError:
+                result = predict_fn(smiles)
+            score = _normalize_probability(result)
+            if score is not None:
+                return score
+
+    return None
+
+
+def _heuristic_smiles_risk(smiles: str) -> float:
+    hetero = sum(1 for ch in smiles if ch in "NOSPF")
+    aromatic = smiles.count("c")
+    halogen = sum(1 for token in ("Cl", "Br", "I") if token in smiles)
+    ring = smiles.count("1")
+    risk = 0.25 + 0.02 * hetero + 0.01 * aromatic + 0.05 * halogen + 0.01 * ring
+    return float(max(0.0, min(1.0, risk)))
+
+
+def estimate_hepatotoxicity_from_smiles(smiles: str) -> float:
+    """优先使用 DILIPred 估算肝毒性，若不可用则退化为启发式推断。"""
+
+    if not smiles:
+        raise ValueError("SMILES 不能为空；无法估算肝毒性。")
+    score = _predict_with_dilipred(smiles)
+    if score is not None:
+        return float(max(0.0, min(1.0, score)))
+    warnings.warn(
+        "未能通过 DILIPred 获取肝毒性，改用启发式估计（准确度有限）。",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    return _heuristic_smiles_risk(smiles)
 
 
 def _deep_update(base: dict, overrides: dict) -> dict:
@@ -70,7 +172,7 @@ class Ingredient:
 
     Attributes:
         name: 成分名称。
-        herb: 所属中药名。
+        smiles: 该成分的 SMILES 表达式，用于必要时推断肝毒性。
         hepatotoxicity_score: 外部模型/实验给出的肝毒性打分（越高越差）。
         ob: Oral Bioavailability，若缺失可置 None。
         dl: Drug Likeness，若缺失可置 None。
@@ -85,8 +187,8 @@ class Ingredient:
     """
 
     name: str
-    herb: str
-    hepatotoxicity_score: float
+    smiles: str | None = None
+    hepatotoxicity_score: float | None = None
     ob: float | None = None
     dl: float | None = None
     mw: float | None = None
@@ -97,6 +199,19 @@ class Ingredient:
     bbb: float | None = None
     fasa: float | None = None
     hl: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.hepatotoxicity_score is not None:
+            object.__setattr__(
+                self, "hepatotoxicity_score", float(self.hepatotoxicity_score)
+            )
+            return
+        if not self.smiles:
+            raise ValueError(
+                f"成分 {self.name} 缺少 hepatotoxicity_score，且未提供 SMILES。"
+            )
+        estimated = estimate_hepatotoxicity_from_smiles(self.smiles)
+        object.__setattr__(self, "hepatotoxicity_score", float(estimated))
 
 
 @dataclass(frozen=True)
@@ -167,7 +282,9 @@ class CandidateSolution:
     length: int
 
     @classmethod
-    def from_components(cls, selects: Sequence[bool], proportions: Sequence[float]) -> "CandidateSolution":
+    def from_components(
+        cls, selects: Sequence[bool], proportions: Sequence[float]
+    ) -> "CandidateSolution":
         return cls(_pack_bools(selects), array("f", proportions), len(selects))
 
     def iter_selects(self) -> Iterable[bool]:
@@ -197,10 +314,14 @@ class CandidateSolution:
         return normalized
 
     def with_normalized(self) -> "CandidateSolution":
-        return CandidateSolution(bytearray(self.select_bits), self.normalized_proportions(), self.length)
+        return CandidateSolution(
+            bytearray(self.select_bits), self.normalized_proportions(), self.length
+        )
 
 
-def ensure_selection(selects: List[bool], ingredients: Sequence[Ingredient]) -> List[bool]:
+def ensure_selection(
+    selects: List[bool], ingredients: Sequence[Ingredient]
+) -> List[bool]:
     """保证至少选中一个成分；若全为 False，则按输入顺序启用首个成分以保持确定性。"""
     if any(selects) or not ingredients:
         return list(selects)
@@ -209,7 +330,9 @@ def ensure_selection(selects: List[bool], ingredients: Sequence[Ingredient]) -> 
     return copy
 
 
-def vector_to_candidate(vector: Sequence[float], ingredients: Sequence[Ingredient]) -> CandidateSolution:
+def vector_to_candidate(
+    vector: Sequence[float], ingredients: Sequence[Ingredient]
+) -> CandidateSolution:
     """将 pymoo/pyswarms 的 [0,1] 向量映射为混合染色体。
 
     Args:
@@ -219,10 +342,12 @@ def vector_to_candidate(vector: Sequence[float], ingredients: Sequence[Ingredien
     Returns:
         归一化后的 CandidateSolution。
     """
+    # 向量前半段存储“是否选择”布尔值，后半段为连续配比。
     half = len(vector) // 2
     selects = [float(value) > 0.5 for value in vector[:half]]
     selects = ensure_selection(selects, ingredients)
     proportions = [float(value) for value in vector[half:]]
+    # 限制配比在 [0.01, 1.0]，防止极端值导致归一化数值漂移。
     proportions = [max(0.01, min(1.0, value)) for value in proportions]
     return CandidateSolution.from_components(selects, proportions)
 
@@ -284,13 +409,16 @@ def compute_desirability_score(ingredient: Ingredient) -> float:
     product = 1.0
     for score in scores:
         product *= score
+    # 采用几何平均放大小值影响，使任一指标严重偏离时整体得分下降。
     geo_mean = product ** (1 / len(scores))
     coverage = len(scores) / max(_TOTAL_FEATURES, 1)
     coverage_floor = max(0.0, min(1.0, _get_aci_settings().get("coverage_floor", 0.0)))
     return geo_mean * max(coverage, coverage_floor)
 
 
-def compute_complementarity_score(candidate: CandidateSolution, ingredients: Sequence[Ingredient]) -> float:
+def compute_complementarity_score(
+    candidate: CandidateSolution, ingredients: Sequence[Ingredient]
+) -> float:
     """根据特征多样性计算组合互补性。"""
 
     feature_diversities: list[float] = []
@@ -301,7 +429,9 @@ def compute_complementarity_score(candidate: CandidateSolution, ingredients: Seq
     for feature, attr in ADME_FEATURE_ATTRS.items():
         values: list[float] = []
         weights: list[float] = []
-        for select, proportion, ingredient in zip(candidate.iter_selects(), candidate.proportions, ingredients):
+        for select, proportion, ingredient in zip(
+            candidate.iter_selects(), candidate.proportions, ingredients
+        ):
             if not select:
                 continue
             normalized = _normalized_feature_value(feature, getattr(ingredient, attr))
@@ -333,7 +463,9 @@ def compute_aci_score(
     """计算基于 ADME 特征的 ACI 指标。"""
 
     desirabilities: list[tuple[float, float]] = []
-    for select, proportion, ingredient in zip(candidate.iter_selects(), candidate.proportions, ingredients):
+    for select, proportion, ingredient in zip(
+        candidate.iter_selects(), candidate.proportions, ingredients
+    ):
         if not select:
             continue
         desirability = compute_desirability_score(ingredient)
@@ -343,7 +475,10 @@ def compute_aci_score(
     total_prop = sum(weight for weight, _ in desirabilities)
     if total_prop <= 0:
         return 0.0
-    weighted_mean = sum(weight * desirability for weight, desirability in desirabilities) / total_prop
+    weighted_mean = (
+        sum(weight * desirability for weight, desirability in desirabilities)
+        / total_prop
+    )
     complementarity = compute_complementarity_score(candidate, ingredients)
     if lambda_weight is None:
         lambda_weight = _get_aci_settings().get("lambda_weight", ACI_LAMBDA)
@@ -351,7 +486,9 @@ def compute_aci_score(
     return (1 - lambda_weight) * weighted_mean + lambda_weight * complementarity
 
 
-def compute_hepatotoxicity_score(candidate: CandidateSolution, ingredients: Sequence[Ingredient]) -> float:
+def compute_hepatotoxicity_score(
+    candidate: CandidateSolution, ingredients: Sequence[Ingredient]
+) -> float:
     """计算组合的加权肝毒性得分。
 
     Args:
@@ -362,34 +499,36 @@ def compute_hepatotoxicity_score(candidate: CandidateSolution, ingredients: Sequ
         配比加权后的 hepatotoxicity_score。
     """
     score = 0.0
-    for select, proportion, ingredient in zip(candidate.iter_selects(), candidate.proportions, ingredients):
+    for select, proportion, ingredient in zip(
+        candidate.iter_selects(), candidate.proportions, ingredients
+    ):
         if select:
             score += ingredient.hepatotoxicity_score * proportion
     return score
 
 
-def diversity_penalty(candidate: CandidateSolution, ingredients: Sequence[Ingredient]) -> float:
-    """若同一母药占比 ≥80%，返回 0.1 惩罚，否则 0。
+def diversity_penalty(
+    candidate: CandidateSolution, ingredients: Sequence[Ingredient]
+) -> float:
+    """若单一成分占比 ≥80%，返回 0.1 惩罚，否则 0。
 
     Args:
         candidate: 当前组合。
-        ingredients: 成分信息（用于获取 herb 名称）。
+        ingredients: 成分信息（占位，保留与 evaluate_metrics 的签名一致）。
 
     Returns:
         惩罚值（0.1 或 0）。
     """
-    herb_proportions: dict[str, float] = {}
-    for select, proportion, ingredient in zip(candidate.iter_selects(), candidate.proportions, ingredients):
-        if not select:
-            continue
-        herb_proportions[ingredient.herb] = herb_proportions.get(ingredient.herb, 0.0) + proportion
-    if not herb_proportions:
-        return 0.0
-    majority_ratio = max(herb_proportions.values())
-    return 0.1 if majority_ratio >= 0.8 else 0.0
+    max_ratio = 0.0
+    for select, proportion in zip(candidate.iter_selects(), candidate.proportions):
+        if select:
+            max_ratio = max(max_ratio, proportion)
+    return 0.1 if max_ratio >= 0.8 else 0.0
 
 
-def evaluate_metrics(candidate: CandidateSolution, ingredients: Sequence[Ingredient]) -> Tuple[float, float, float, float]:
+def evaluate_metrics(
+    candidate: CandidateSolution, ingredients: Sequence[Ingredient]
+) -> Tuple[float, float, float, float]:
     """返回 (ACI(含惩罚), 肝毒性, 惩罚, 纯 ACI)。
 
     Args:
@@ -399,6 +538,7 @@ def evaluate_metrics(candidate: CandidateSolution, ingredients: Sequence[Ingredi
     Returns:
         (ACI, 肝毒性, 惩罚, ACI_raw)
     """
+    # 先归一化配比，再统一计算各项指标，确保多算法输出可比较。
     normalized_candidate = candidate.with_normalized()
     aci_raw = compute_aci_score(normalized_candidate, ingredients)
     toxicity = compute_hepatotoxicity_score(normalized_candidate, ingredients)
@@ -407,7 +547,11 @@ def evaluate_metrics(candidate: CandidateSolution, ingredients: Sequence[Ingredi
     return aci_with_penalty, toxicity, penalty, aci_raw
 
 
-def single_objective_score(candidate: CandidateSolution, ingredients: Sequence[Ingredient], toxicity_weight: float = 1.0) -> float:
+def single_objective_score(
+    candidate: CandidateSolution,
+    ingredients: Sequence[Ingredient],
+    toxicity_weight: float = 1.0,
+) -> float:
     """单目标评价：ACI - toxicity_weight * 肝毒性。
 
     Args:
@@ -422,7 +566,9 @@ def single_objective_score(candidate: CandidateSolution, ingredients: Sequence[I
     return aci - toxicity_weight * toxicity
 
 
-def multi_objective_score(candidate: CandidateSolution, ingredients: Sequence[Ingredient]) -> Tuple[float, float]:
+def multi_objective_score(
+    candidate: CandidateSolution, ingredients: Sequence[Ingredient]
+) -> Tuple[float, float]:
     """返回 (ACI, 肝毒性)。
 
     Args:
@@ -445,9 +591,15 @@ class CombinationProblem(ElementwiseProblem):
         toxicity_weight: 仅在单目标模式下生效，表示肝毒性惩罚权重。
     """
 
-    def __init__(self, ingredients: Sequence[Ingredient], mode: str = "single", toxicity_weight: float = 1.0):
+    def __init__(
+        self,
+        ingredients: Sequence[Ingredient],
+        mode: str = "single",
+        toxicity_weight: float = 1.0,
+    ):
         n_var = len(ingredients) * 2
         n_obj = 1 if mode == "single" else 2
+        # 变量下界/上界均为 [0,1]，以便直接套用向量编码。
         super().__init__(n_var=n_var, n_obj=n_obj, xl=0.0, xu=1.0)
         self.ingredients = ingredients
         self.mode = mode
@@ -463,6 +615,7 @@ class CombinationProblem(ElementwiseProblem):
         candidate = vector_to_candidate(x, self.ingredients)
         aci, toxicity = multi_objective_score(candidate, self.ingredients)
         if self.mode == "single":
+            # pymoo 默认最小化，故取负值以最大化 (ACI - 权重*毒性)。
             out["F"] = np.array([-(aci - self.toxicity_weight * toxicity)])
         else:
             out["F"] = np.array([-aci, toxicity])
@@ -480,25 +633,43 @@ class PymooSingleObjectiveGA:
     ):
         """配置 GA 所需组件；默认参数来自 config/algorithms.json。"""
         cfg = _load_algorithm_config()["ga"]
-        self.toxicity_weight = toxicity_weight if toxicity_weight is not None else cfg["toxicity_weight"]
-        self.generations = generations if generations is not None else cfg["generations"]
+        self.toxicity_weight = (
+            toxicity_weight if toxicity_weight is not None else cfg["toxicity_weight"]
+        )
+        self.generations = (
+            generations if generations is not None else cfg["generations"]
+        )
         pop = population_size if population_size is not None else cfg["population_size"]
-        self.problem = CombinationProblem(ingredients, mode="single", toxicity_weight=self.toxicity_weight)
+        self.problem = CombinationProblem(
+            ingredients, mode="single", toxicity_weight=self.toxicity_weight
+        )
         self.algorithm = PymooGAAlg(pop_size=pop, eliminate_duplicates=True)
 
     def run(self) -> CandidateSolution:
         """执行单目标 GA 并返回最优 candidate。"""
-        result = minimize(self.problem, self.algorithm, termination=("n_gen", self.generations), verbose=False)
+        result = minimize(
+            self.problem,
+            self.algorithm,
+            termination=("n_gen", self.generations),
+            verbose=False,
+        )
         return vector_to_candidate(result.X, self.problem.ingredients)
 
 
 class PymooNSGAII:
     """基于 pymoo NSGA-II 的多目标优化器。"""
 
-    def __init__(self, ingredients: Sequence[Ingredient], generations: int | None = None, population_size: int | None = None):
+    def __init__(
+        self,
+        ingredients: Sequence[Ingredient],
+        generations: int | None = None,
+        population_size: int | None = None,
+    ):
         """初始化 NSGA-II；默认参数读取配置文件。"""
         cfg = _load_algorithm_config()["nsga2"]
-        self.generations = generations if generations is not None else cfg["generations"]
+        self.generations = (
+            generations if generations is not None else cfg["generations"]
+        )
         pop = population_size if population_size is not None else cfg["population_size"]
         self.problem = CombinationProblem(ingredients, mode="multi")
         self.algorithm = NSGA2(pop_size=pop)
@@ -510,7 +681,12 @@ class PymooNSGAII:
             solutions: 输入向量转化的 CandidateSolution 列表。
             np.ndarray: 每个 solution 的目标值（ACI 取负 + 肝毒性）。
         """
-        result = minimize(self.problem, self.algorithm, termination=("n_gen", self.generations), verbose=False)
+        result = minimize(
+            self.problem,
+            self.algorithm,
+            termination=("n_gen", self.generations),
+            verbose=False,
+        )
         solutions = [vector_to_candidate(x, self.problem.ingredients) for x in result.X]
         return solutions, result.F
 
@@ -550,7 +726,9 @@ class PySwarmsPSO:
             options=self.options,
             bounds=(np.zeros(self.dimensions), np.ones(self.dimensions)),
         )
-        _, best_pos = optimizer.optimize(self._fitness, iters=self.iterations, verbose=False)
+        _, best_pos = optimizer.optimize(
+            self._fitness, iters=self.iterations, verbose=False
+        )
         return vector_to_candidate(best_pos, self.ingredients)
 
 
