@@ -20,10 +20,21 @@
   - `python main.py` → 输出 `Hello from noname!`
 - 演示模式（需安装额外依赖并具备可写目录）：
   - 使用内置示例：`python main.py --mode demo`
-  - 指定外部成分文件：
+- 指定外部成分文件：
     - CSV：`python main.py --mode demo --ingredients resources/templates/ingredients.csv --format csv`
     - JSON：`python main.py --mode demo --ingredients resources/templates/ingredients.json --format json`
     - 自动按扩展名推断：`--format auto`（默认）
+
+可视化/输出/算法控件（节选）：
+
+- `--output-dir`：可视化输出目录（默认取配置 `viz.output_dir`）
+- `--no-fig`：禁用可视化
+- `--save-metrics`：将 NSGA 候选指标保存为 CSV
+- `--precision`：打印指标小数位（默认 3）
+- `--dpi`：图像 DPI（默认取配置或 200）
+- `--colormap`：帕累托前沿 colormap（默认取配置或 viridis）
+- `--font`/`--font-dir`：中文字体名与备选字体目录
+- `--max-candidates`：NSGA 候选解数量上限（优先于配置）
 
 成分字段（列名不区分大小写，支持常见同义名）：
 - 必需：`name`；且 `smiles` 与 `hepatotoxicity_score` 至少其一存在
@@ -138,6 +149,8 @@ ACI 的计算公式如下：
 ## 配置（config/algorithms.json）
 
 所有算法相关的参数均在 `config/algorithms.json` 中定义；若文件缺失，则使用内置默认值。加载逻辑支持“深合并”，仅需覆盖需要变更的键即可（参见 `algorithms._deep_update`）。
+
+完整字段、默认值与调优建议，请参见：`CONFIG.md`。
 
 示例（与当前默认一致）：
 

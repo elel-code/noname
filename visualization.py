@@ -116,6 +116,9 @@ def plot_nsga_front(
     metrics: np.ndarray,
     highlights: Iterable[HighlightPoint],
     output_path: Path,
+    *,
+    dpi: int = 200,
+    colormap: str = "viridis",
 ) -> None:
     """绘制 NSGA-II 帕累托前沿图。"""
 
@@ -129,7 +132,7 @@ def plot_nsga_front(
         toxicities,
         aci_scores,
         c=aci_scores,
-        cmap="viridis",
+        cmap=colormap,
         edgecolors="black",
         alpha=0.8,
     )
@@ -151,7 +154,7 @@ def plot_nsga_front(
         )
         _annotate_highlight_points(ax, highlight_points)
     fig.tight_layout()
-    fig.savefig(output_path, dpi=200)
+    fig.savefig(output_path, dpi=dpi)
     plt.close(fig)
 
 
@@ -159,6 +162,8 @@ def plot_candidate_mix_bar(
     candidate: CandidateSolution,
     ingredients: Sequence[Ingredient],
     output_path: Path,
+    *,
+    dpi: int = 200,
 ) -> None:
     """绘制最佳候选的条形占比图。"""
 
@@ -178,7 +183,7 @@ def plot_candidate_mix_bar(
         ax.text(value + 1, bar.get_y() + bar.get_height() / 2, f"{value:.1f}%", va="center")
     ax.set_xlim(0, max(100, max(values) + 10))
     fig.tight_layout()
-    fig.savefig(output_path, dpi=200)
+    fig.savefig(output_path, dpi=dpi)
     plt.close(fig)
 
 
@@ -186,6 +191,8 @@ def plot_candidate_mix_pie(
     candidate: CandidateSolution,
     ingredients: Sequence[Ingredient],
     output_path: Path,
+    *,
+    dpi: int = 200,
 ) -> None:
     """绘制最佳候选的饼图占比。"""
 
@@ -202,7 +209,7 @@ def plot_candidate_mix_pie(
     ax.set_title("最佳候选配比（饼图）")
     ax.axis("equal")
     fig.tight_layout()
-    fig.savefig(output_path, dpi=200)
+    fig.savefig(output_path, dpi=dpi)
     plt.close(fig)
 
 
@@ -212,6 +219,9 @@ def render_nsga_visualizations(
     metrics: np.ndarray,
     highlight_points: Iterable[HighlightPoint] | None = None,
     output_dir: Path | None = None,
+    *,
+    dpi: int = 200,
+    colormap: str = "viridis",
 ) -> dict[str, Path]:
     """统一生成 NSGA 相关图表并返回路径。"""
 
@@ -219,9 +229,9 @@ def render_nsga_visualizations(
     pareto_path = target_dir / "nsga_pareto.png"
     bar_path = target_dir / "best_mix_bar.png"
     pie_path = target_dir / "best_mix_pie.png"
-    plot_nsga_front(metrics, list(highlight_points or []), pareto_path)
-    plot_candidate_mix_bar(best_candidate, ingredients, bar_path)
-    plot_candidate_mix_pie(best_candidate, ingredients, pie_path)
+    plot_nsga_front(metrics, list(highlight_points or []), pareto_path, dpi=dpi, colormap=colormap)
+    plot_candidate_mix_bar(best_candidate, ingredients, bar_path, dpi=dpi)
+    plot_candidate_mix_pie(best_candidate, ingredients, pie_path, dpi=dpi)
     return {
         "pareto": pareto_path,
         "mix_bar": bar_path,

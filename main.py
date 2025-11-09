@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 # 说明：
 # - 将重依赖（pymoo/pyswarms/matplotlib 等）的导入延迟到函数内部，
@@ -150,10 +151,36 @@ def run_single_objective_algorithms(ingredients: list["Ingredient"]) -> tuple[li
     best_ga = ga.run()
     best_pso = pso.run()
     return [best_ga, best_pso], ga.toxicity_weight
+def _subsample_solutions_by_toxicity(
+    solutions: list["CandidateSolution"], metrics: "np.ndarray", k: int
+):
+    import numpy as np
+
+    if k is None or k <= 0:
+        return solutions, metrics
+    n = len(solutions)
+    if k >= n:
+        return solutions, metrics
+    # toxicity 在 metrics[:,1]，按升序取等间距下标，保留两端
+    order = np.argsort(metrics[:, 1])
+    idxs = np.linspace(0, n - 1, num=k).round().astype(int)
+    chosen = order[idxs]
+    chosen = np.unique(chosen)
+    return [solutions[i] for i in chosen], metrics[chosen]
+
+
 def run_nsga(
     ingredients: list["Ingredient"],
     toxicity_weight: float,
     highlight_points: list[tuple[str, float, float]] | None = None,
+    *,
+    max_candidates: int | None = None,
+    precision: int = 3,
+    save_metrics: str | None = None,
+    viz_enabled: bool = True,
+    viz_output_dir: str | None = None,
+    viz_dpi: int | None = None,
+    viz_colormap: str | None = None,
 ) -> None:
     """运行 NSGA-II 并打印非支配集候选的指标，并按权重挑选一个候选。
 
@@ -169,28 +196,58 @@ def run_nsga(
 
     nsga = PymooNSGAII(ingredients)
     solutions, metrics = nsga.run()
+    # 应用候选解上限（CLI 优先，其次 config）
+    if max_candidates:
+        solutions, metrics = _subsample_solutions_by_toxicity(solutions, metrics, max_candidates)
+
     print("\nNSGA-II 非支配集候选：")
     for idx, (candidate, metric) in enumerate(zip(solutions, metrics), 1):
         aci = -metric[0]
         toxicity = metric[1]
         penalty = evaluate_metrics(candidate, ingredients)[2]
         # 输出时保留罚分，便于肉眼观察可行/不可行组合差异。
-        print(f"  {idx}. ACI {aci:.3f}，肝毒性 {toxicity:.3f}，惩罚 {penalty:.2f}")
+        print(f"  {idx}. ACI {aci:.{precision}f}，肝毒性 {toxicity:.{precision}f}，惩罚 {penalty:.2f}")
+    if save_metrics:
+        try:
+            import csv
+
+            path = Path(save_metrics)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", newline="", encoding="utf-8") as fp:
+                writer = csv.writer(fp)
+                writer.writerow(["# ACI(+)", "toxicity", "penalty"])
+                for cand, m in zip(solutions, metrics):
+                    aci = -m[0]
+                    tox = m[1]
+                    pen = evaluate_metrics(cand, ingredients)[2]
+                    writer.writerow([f"{aci:.{precision}f}", f"{tox:.{precision}f}", f"{pen:.2f}"])
+            print(f"\n候选指标已保存：{path}")
+        except Exception as e:  # noqa: BLE001
+            print(f"保存指标失败：{e}")
     best_candidate, best_metrics = select_candidate_by_weighted_sum(solutions, ingredients, toxicity_weight)
     print(
         f"\n按 toxicity_weight={toxicity_weight:.2f} 的加权结果："
-        f"ACI_pen {best_metrics['aci_penalized']:.3f} (raw {best_metrics['aci_raw']:.3f})，"
-        f"肝毒性 {best_metrics['toxicity']:.3f}，惩罚 {best_metrics['penalty']:.2f}"
+        f"ACI_pen {best_metrics['aci_penalized']:.{precision}f} (raw {best_metrics['aci_raw']:.{precision}f})，"
+        f"肝毒性 {best_metrics['toxicity']:.{precision}f}，惩罚 {best_metrics['penalty']:.2f}"
     )
     describe_candidate("NSGA-权重选择", best_candidate, ingredients)
     highlight_points = list(highlight_points or [])
     highlight_points.append(("NSGA-权重", best_metrics["toxicity"], best_metrics["aci_raw"]))
-    artifacts = render_nsga_visualizations(best_candidate, ingredients, metrics, highlight_points)
-    print(
-        f"\n可视化已保存：{artifacts['pareto']}、{artifacts['mix_bar']}、{artifacts['mix_pie']}"
-    )
+    if viz_enabled:
+        artifacts = render_nsga_visualizations(
+            best_candidate,
+            ingredients,
+            metrics,
+            highlight_points,
+            output_dir=Path(viz_output_dir) if viz_output_dir else None,
+            dpi=viz_dpi or 200,
+            colormap=viz_colormap or "viridis",
+        )
+        print(
+            f"\n可视化已保存：{artifacts['pareto']}、{artifacts['mix_bar']}、{artifacts['mix_pie']}"
+        )
 
-def run_demo(ingredients: list["Ingredient"] | None = None) -> int:
+def run_demo(ingredients: list["Ingredient"] | None = None, *, args=None) -> int:
     """运行演示（包含算法与可视化）。
 
     Args:
@@ -207,7 +264,10 @@ def run_demo(ingredients: list["Ingredient"] | None = None) -> int:
         )
         return 2
 
-    configure_matplotlib_fonts()
+    if not (args and args.no_fig):
+        preferred = ([args.font] if (args and args.font) else None)
+        fallback = (Path(args.font_dir) if (args and args.font_dir) else None)
+        configure_matplotlib_fonts(preferred_fonts=preferred, fallback_dir=fallback)
 
     ingredients = ingredients or sample_ingredients()
     single_objective_results, toxicity_weight = run_single_objective_algorithms(ingredients)
@@ -223,7 +283,27 @@ def run_demo(ingredients: list["Ingredient"] | None = None) -> int:
         _, toxicity, _, aci_raw = evaluate_metrics(candidate, ingredients)
         highlight_points.append((label, toxicity, aci_raw))
     # 单目标权重会作为多目标加权依据，形成闭环体验。
-    run_nsga(ingredients, toxicity_weight, highlight_points)
+    # 读取可视化默认配置
+    try:
+        from algorithms import _load_algorithm_config
+
+        cfg = _load_algorithm_config()
+        viz_cfg = cfg.get("viz", {}) if isinstance(cfg, dict) else {}
+    except Exception:
+        viz_cfg = {}
+
+    run_nsga(
+        ingredients,
+        toxicity_weight,
+        highlight_points,
+        max_candidates=(args.max_candidates if args and args.max_candidates is not None else viz_cfg.get("max_candidates") or cfg.get("nsga2", {}).get("max_candidates") if 'cfg' in locals() else None),
+        precision=(args.precision if args else 3),
+        save_metrics=(args.save_metrics if args else None),
+        viz_enabled=(not (args and args.no_fig)) and bool(viz_cfg.get("enabled", True)),
+        viz_output_dir=(args.output_dir if args and args.output_dir else viz_cfg.get("output_dir")),
+        viz_dpi=(args.dpi if args and args.dpi else viz_cfg.get("dpi")),
+        viz_colormap=(args.colormap if args and args.colormap else viz_cfg.get("colormap")),
+    )
     return 0
 
 
@@ -253,6 +333,16 @@ def main(argv: list[str] | None = None) -> int:
         default="auto",
         help="成分文件格式（auto/csv/json）。",
     )
+    # 输出/可视化/算法控件
+    parser.add_argument("--output-dir", type=str, default=None, help="可视化输出目录（默认取配置 viz.output_dir）")
+    parser.add_argument("--no-fig", action="store_true", help="禁用可视化输出")
+    parser.add_argument("--save-metrics", type=str, default=None, help="将 NSGA 候选指标保存为 CSV")
+    parser.add_argument("--precision", type=int, default=3, help="打印指标的小数位数（默认 3）")
+    parser.add_argument("--dpi", type=int, default=None, help="可视化输出 DPI（默认取配置 viz.dpi 或 200）")
+    parser.add_argument("--colormap", type=str, default=None, help="NSGA 前沿图的 colormap（默认取配置 viz.colormap 或 viridis）")
+    parser.add_argument("--font", type=str, default=None, help="首选中文字体名（可选）")
+    parser.add_argument("--font-dir", type=str, default=None, help="字体文件目录（可选，作为回退）")
+    parser.add_argument("--max-candidates", type=int, default=None, help="NSGA 候选解数量上限（优先于配置 nsga2.max_candidates）")
     args = parser.parse_args(argv)
 
     if args.mode == "hello":
@@ -273,7 +363,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 3
-    return run_demo(provided)
+    return run_demo(provided, args=args)
 
 
 if __name__ == "__main__":  # pragma: no cover - 直接作为脚本运行

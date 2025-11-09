@@ -6,7 +6,7 @@
   },
   "nsga2": {
     "generations": 30,
-    "population_size": 40
+    "population_size": 50
   },
   "pso": {
     "iterations": 40,

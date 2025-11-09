@@ -32,7 +32,7 @@ if TYPE_CHECKING:  # 仅类型检查用途
 CONFIG_PATH = Path(__file__).resolve().parent / "config" / "algorithms.json"
 _DEFAULT_ALGO_CONFIG = {
     "ga": {"generations": 25, "population_size": 32, "toxicity_weight": 1.0},
-    "nsga2": {"generations": 30, "population_size": 40},
+    "nsga2": {"generations": 30, "population_size": 40, "max_candidates": None},
     "pso": {
         "iterations": 40,
         "swarm_size": 24,
@@ -42,6 +42,12 @@ _DEFAULT_ALGO_CONFIG = {
         "lambda_weight": 0.3,
         "complement_variance_max": 0.25,
         "coverage_floor": 0.0,
+    },
+    "viz": {
+        "enabled": True,
+        "output_dir": "artifacts",
+        "dpi": 200,
+        "colormap": "viridis",
     },
 }
 _ALGO_CONFIG_CACHE: dict | None = None
