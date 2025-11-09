@@ -13,3 +13,22 @@ dependencies = [
    "ipython>=8.12.0,<9.0.0",
    "matplotlib>=3.8.0,<4.0.0",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6.9",
+    "pytest>=8.3.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "F632",  # 'is' / 'is not' 与字面量比较
+]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"

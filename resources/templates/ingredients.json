@@ -1,0 +1,46 @@
+[
+  {
+    "name": "黄芩素",
+    "smiles": "OC1=CC=C2C(=C1)C(=O)C=C(O)C(=O)O2",
+    "hepatotoxicity_score": 0.3,
+    "ob": 35.0,
+    "dl": 0.18,
+    "mw": 270.2,
+    "alogp": 2.1,
+    "h_don": 3,
+    "h_acc": 5,
+    "caco2": 0.82,
+    "bbb": -0.3,
+    "fasa": 0.33,
+    "hl": 6.5
+  },
+  {
+    "name": "川芎嗪",
+    "smiles": "CN1C=NC(=CN=C1N(C)C)N(C)C",
+    "hepatotoxicity_score": 0.2,
+    "ob": 32.0,
+    "dl": 0.09,
+    "mw": 136.2,
+    "alogp": 0.3,
+    "h_don": 1,
+    "h_acc": 2,
+    "caco2": 1.1,
+    "bbb": 1,
+    "fasa": 0.28,
+    "hl": 3.5
+  },
+  {
+    "name": "黄连碱",
+    "smiles": "COC1=CC=CC=C1O",
+    "ob": 26.0,
+    "dl": 0.12,
+    "mw": 336.4,
+    "alogp": 1.5,
+    "h_don": 0,
+    "h_acc": 4,
+    "caco2": 0.4,
+    "bbb": -0.7,
+    "fasa": 0.48,
+    "hl": 8.0
+  }
+]

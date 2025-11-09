@@ -190,8 +190,12 @@ def run_nsga(
         f"\n可视化已保存：{artifacts['pareto']}、{artifacts['mix_bar']}、{artifacts['mix_pie']}"
     )
 
-def run_demo() -> int:
-    """运行原演示（包含算法与可视化）。"""
+def run_demo(ingredients: list["Ingredient"] | None = None) -> int:
+    """运行演示（包含算法与可视化）。
+
+    Args:
+        ingredients: 可选的外部成分列表；若未提供则使用内置样例。
+    """
 
     try:
         from visualization import configure_matplotlib_fonts
@@ -205,7 +209,7 @@ def run_demo() -> int:
 
     configure_matplotlib_fonts()
 
-    ingredients = sample_ingredients()
+    ingredients = ingredients or sample_ingredients()
     single_objective_results, toxicity_weight = run_single_objective_algorithms(ingredients)
     print("单目标算法结果：")
     for label, candidate in zip(("遗传算法", "粒子群算法"), single_objective_results):
@@ -236,6 +240,19 @@ def main(argv: list[str] | None = None) -> int:
         default="hello",
         help="运行模式：hello（默认）或 demo（需要依赖）",
     )
+    parser.add_argument(
+        "--ingredients",
+        type=str,
+        default=None,
+        help="成分数据文件（CSV/JSON）。仅在 demo 模式使用。",
+    )
+    parser.add_argument(
+        "--format",
+        dest="ingredients_format",
+        choices=("auto", "csv", "json"),
+        default="auto",
+        help="成分文件格式（auto/csv/json）。",
+    )
     args = parser.parse_args(argv)
 
     if args.mode == "hello":
@@ -243,7 +260,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # demo 模式
-    return run_demo()
+    provided: list["Ingredient"] | None = None
+    if args.ingredients:
+        try:
+            from algorithms import load_ingredients
+
+            fmt = None if args.ingredients_format == "auto" else args.ingredients_format
+            provided = load_ingredients(args.ingredients, fmt=fmt)
+        except Exception as e:  # noqa: BLE001 - 面向用户的直观提示
+            print(
+                f"加载成分文件失败：{e}",
+                file=sys.stderr,
+            )
+            return 3
+    return run_demo(provided)
 
 
 if __name__ == "__main__":  # pragma: no cover - 直接作为脚本运行

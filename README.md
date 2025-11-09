@@ -1,4 +1,61 @@
 # 中药成分组合优化模板（含最小可运行入口）
+## 开发与质量检查
+
+本项目已内置 Ruff 规则，防止误用 `is/is not` 与字面量进行比较（F632）。
+
+### 环境准备
+
+1. 创建虚拟环境（Windows PowerShell）：
+   - `py -3.11 -m venv .venv`
+   - `.\.venv\Scripts\Activate.ps1`
+2. 安装依赖（使用 uv 推荐）：
+   - 仅主依赖：`uv sync`
+   - 含开发依赖：`uv sync --group dev`
+
+开发依赖（`ruff`、`pytest`）已在 `pyproject.toml` 的 `[dependency-groups.dev]` 中声明。
+
+### 运行程序
+
+- 基本验证（不依赖重库）：
+  - `python main.py` → 输出 `Hello from noname!`
+- 演示模式（需安装额外依赖并具备可写目录）：
+  - 使用内置示例：`python main.py --mode demo`
+- 指定外部成分文件：
+    - CSV：`python main.py --mode demo --ingredients resources/templates/ingredients.csv --format csv`
+    - JSON：`python main.py --mode demo --ingredients resources/templates/ingredients.json --format json`
+    - 自动按扩展名推断：`--format auto`（默认）
+
+成分字段（列名不区分大小写，支持常见同义名）：
+- 必需：`name`；且 `smiles` 与 `hepatotoxicity_score` 至少其一存在
+- 可选：`ob, dl, mw, alogp, h_don, h_acc, caco2, bbb, fasa, hl`
+  - `bbb` 可用 0/1、true/false 或 logBB 数值表示
+
+### Lint 与自动修复
+
+启用 Ruff 的 F632 规则（`is/is not` 与字面量比较）：
+
+```
+uv run ruff check . --select F632
+uv run ruff check . --select F632 --fix
+```
+
+### 语法告警即错误
+
+将 `SyntaxWarning` 视为错误进行编译检查：
+
+```
+Get-ChildItem -Recurse -Filter *.py | ForEach-Object { python -W error::SyntaxWarning -m py_compile $_.FullName }
+```
+
+### 运行测试
+
+```
+uv run pytest -q
+```
+
+测试包含：
+- `tests/test_main.py`：校验 `--mode hello` 输出
+- `tests/test_no_is_literal.py`：AST 扫描，确保仓库内无 `is/is not` 与字面量比较
 
 该项目默认提供“最小可运行”的入口，便于在无依赖/只读环境中快速自检；
 同时保留原有基于 `pymoo` 与 `pyswarms` 的优化演示作为可选模式。

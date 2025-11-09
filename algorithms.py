@@ -1,21 +1,33 @@
 from __future__ import annotations
 
 import copy
+import csv
 import json
 import math
 import warnings
 from array import array
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, List, Sequence, Tuple
+from typing import Any, Iterable, List, Sequence, Tuple, TYPE_CHECKING
 
-import dilipred
-import numpy as np
-from pymoo.algorithms.moo.nsga2 import NSGA2
-from pymoo.algorithms.soo.nonconvex.ga import GA as PymooGAAlg
-from pymoo.core.problem import ElementwiseProblem
-from pymoo.optimize import minimize
-from pyswarms.single.global_best import GlobalBestPSO
+# 惰性依赖：仅在需要时再导入第三方库，避免默认运行的额外负担
+def _get_dilipred_module():
+    try:
+        import importlib
+
+        return importlib.import_module("dilipred")
+    except Exception:
+        return None
+
+try:
+    from pymoo.core.problem import ElementwiseProblem as _ElementwiseProblem
+except Exception:  # pragma: no cover - 缺少依赖时的占位
+    class _ElementwiseProblem:  # type: ignore
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("pymoo 未安装，进化算法相关功能不可用。")
+
+if TYPE_CHECKING:  # 仅类型检查用途
+    import numpy as np  # type: ignore
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config" / "algorithms.json"
 _DEFAULT_ALGO_CONFIG = {
@@ -64,6 +76,9 @@ def _load_dilipred_predictor_instance() -> Any | None:
     global _DILIPRED_PREDICTOR
     if _DILIPRED_PREDICTOR is not None:
         return _DILIPRED_PREDICTOR
+    dilipred = _get_dilipred_module()
+    if dilipred is None:
+        return None
     for attr in ("DILIPRedictor", "DILIPred", "DILIPredictor", "Predictor", "Model"):
         factory = getattr(dilipred, attr, None)
         if callable(factory):
@@ -81,8 +96,9 @@ def _predict_with_dilipred(smiles: str) -> float | None:
         return None
 
     # 直接使用 dilipred 模块所暴露的 Python API；若失败再退化为启发式。
+    dilipred = _get_dilipred_module()
     for attr in ("predict_smiles", "predict_dili", "predict"):
-        predict_fn = getattr(dilipred, attr, None)
+        predict_fn = getattr(dilipred, attr, None) if dilipred else None
         if not callable(predict_fn):
             continue
         try:
@@ -212,6 +228,187 @@ class Ingredient:
             )
         estimated = estimate_hepatotoxicity_from_smiles(self.smiles)
         object.__setattr__(self, "hepatotoxicity_score", float(estimated))
+
+
+# ---------------------------
+# 数据读取与解析接口
+# ---------------------------
+
+_COL_MAP = {
+    "name": {"name", "ingredient", "compound", "drug", "名称", "成分"},
+    "smiles": {"smiles", "smile"},
+    "hepatotoxicity_score": {
+        "hepatotoxicity_score",
+        "hepatotoxicity",
+        "dili",
+        "toxicity",
+        "toxicity_score",
+    },
+    "ob": {"ob", "oralbioavailability", "bioavailability"},
+    "dl": {"dl", "druglikeness", "drug_likeness"},
+    "mw": {"mw", "molecularweight", "molecular_weight"},
+    "alogp": {"alogp", "logp", "a_logp"},
+    "h_don": {"h_don", "hdon", "hbd", "hbond_donor", "h_donor"},
+    "h_acc": {"h_acc", "hacc", "hba", "hbond_acceptor", "h_acceptor"},
+    "caco2": {"caco2", "caco-2", "logpapp", "papp"},
+    "bbb": {"bbb", "logbb", "bloodbrainbarrier"},
+    "fasa": {"fasa", "fasa-"},
+    "hl": {"hl", "half_life", "half-life", "t_half"},
+}
+
+
+def _norm_key(key: str) -> str:
+    return "".join(ch for ch in key.strip().lower() if ch.isalnum() or ch == "_")
+
+
+def _map_header_to_attr(header: str) -> str | None:
+    nk = _norm_key(header)
+    for attr, names in _COL_MAP.items():
+        if nk in names:
+            return attr
+    return None
+
+
+def _to_float_or_none(v: Any) -> float | None:
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip()
+    if s == "" or s.lower() in {"na", "nan", "none", "null"}:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def load_ingredients_csv(path: str | Path, encoding: str = "utf-8") -> list[Ingredient]:
+    """从 CSV 读取药物成分。
+
+    至少包含 `name`，且 `smiles` 与 `hepatotoxicity_score` 至少其一存在。
+    其他可选列：ob, dl, mw, alogp, h_don, h_acc, caco2, bbb, fasa, hl。
+    支持常见同义列名（不区分大小写，自动规范化）。
+    """
+
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"未找到文件：{path}")
+    with path.open("r", encoding=encoding, newline="") as fp:
+        sample = fp.read(4096)
+        fp.seek(0)
+        try:
+            dialect = csv.Sniffer().sniff(sample)
+        except Exception:
+            dialect = csv.excel
+        reader = csv.DictReader(fp, dialect=dialect)
+        if not reader.fieldnames:
+            return []
+        rows: list[Ingredient] = []
+        for raw in reader:
+            data: dict[str, Any] = {}
+            for key, value in raw.items():
+                attr = _map_header_to_attr(key)
+                if attr is None:
+                    continue
+                if attr in {"name", "smiles"}:
+                    data[attr] = (value or "").strip() or None
+                elif attr == "bbb":
+                    fv = _to_float_or_none(value)
+                    if fv is None:
+                        sv = str(value).strip().lower()
+                        if sv in {"y", "yes", "true", "1", "+"}:
+                            fv = 1.0
+                        elif sv in {"n", "no", "false", "0", "-"}:
+                            fv = 0.0
+                    data[attr] = fv
+                else:
+                    data[attr] = _to_float_or_none(value)
+            name = (data.get("name") or "").strip()
+            if not name:
+                continue
+            if not data.get("smiles") and data.get("hepatotoxicity_score") is None:
+                raise ValueError(
+                    f"记录缺少必需信息（必须提供 smiles 或 hepatotoxicity_score）：{name}"
+                )
+            rows.append(
+                Ingredient(
+                    name=name,
+                    smiles=data.get("smiles"),
+                    hepatotoxicity_score=data.get("hepatotoxicity_score"),
+                    ob=data.get("ob"),
+                    dl=data.get("dl"),
+                    mw=data.get("mw"),
+                    alogp=data.get("alogp"),
+                    h_don=data.get("h_don"),
+                    h_acc=data.get("h_acc"),
+                    caco2=data.get("caco2"),
+                    bbb=data.get("bbb"),
+                    fasa=data.get("fasa"),
+                    hl=data.get("hl"),
+                )
+            )
+        return rows
+
+
+def load_ingredients_json(path: str | Path, encoding: str = "utf-8") -> list[Ingredient]:
+    """从 JSON 读取药物成分（数组形式，每项为对象）。"""
+
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"未找到文件：{path}")
+    data = json.loads(path.read_text(encoding=encoding))
+    if not isinstance(data, list):
+        raise ValueError("JSON 根应为数组（list）。")
+    results: list[Ingredient] = []
+    for obj in data:
+        if not isinstance(obj, dict):
+            continue
+        def get_any(keys: Iterable[str]):
+            for k in keys:
+                if k in obj and obj[k] not in (None, ""):
+                    return obj[k]
+            return None
+
+        name = get_any(_COL_MAP["name"]) or ""
+        smiles = get_any(_COL_MAP["smiles"]) or None
+        score = _to_float_or_none(get_any(_COL_MAP["hepatotoxicity_score"]))
+        if not name:
+            continue
+        if not smiles and score is None:
+            raise ValueError(
+                f"记录缺少必需信息（必须提供 smiles 或 hepatotoxicity_score）：{name}"
+            )
+        results.append(
+            Ingredient(
+                name=name,
+                smiles=smiles,
+                hepatotoxicity_score=score,
+                ob=_to_float_or_none(get_any(_COL_MAP["ob"])),
+                dl=_to_float_or_none(get_any(_COL_MAP["dl"])),
+                mw=_to_float_or_none(get_any(_COL_MAP["mw"])),
+                alogp=_to_float_or_none(get_any(_COL_MAP["alogp"])),
+                h_don=_to_float_or_none(get_any(_COL_MAP["h_don"])),
+                h_acc=_to_float_or_none(get_any(_COL_MAP["h_acc"])),
+                caco2=_to_float_or_none(get_any(_COL_MAP["caco2"])),
+                bbb=_to_float_or_none(get_any(_COL_MAP["bbb"])),
+                fasa=_to_float_or_none(get_any(_COL_MAP["fasa"])),
+                hl=_to_float_or_none(get_any(_COL_MAP["hl"])),
+            )
+        )
+    return results
+
+
+def load_ingredients(path: str | Path, fmt: str | None = None, encoding: str = "utf-8") -> list[Ingredient]:
+    """按后缀或指定格式读取药物成分（CSV/JSON）。"""
+    path = Path(path)
+    ext = path.suffix.lower().lstrip(".")
+    format_to_use = (fmt or ("csv" if ext in {"csv", "tsv"} else "json")).lower()
+    if format_to_use == "csv":
+        return load_ingredients_csv(path, encoding=encoding)
+    if format_to_use == "json":
+        return load_ingredients_json(path, encoding=encoding)
+    raise ValueError(f"不支持的格式：{fmt!r} / 扩展名：.{ext}")
 
 
 @dataclass(frozen=True)
@@ -441,6 +638,7 @@ def compute_complementarity_score(
             weights.append(proportion)
         if len(values) <= 1:
             continue
+        import numpy as np  # 惰性导入，避免默认运行时依赖 numpy
         weights_arr = np.array(weights, dtype=float)
         total = weights_arr.sum()
         if total <= 0:
@@ -582,7 +780,7 @@ def multi_objective_score(
     return aci, toxicity
 
 
-class CombinationProblem(ElementwiseProblem):
+class CombinationProblem(_ElementwiseProblem):
     """pymoo 兼容问题定义，用于描述复方的选择+配比变量与 ACI/毒性目标。
 
     Args:
@@ -612,6 +810,7 @@ class CombinationProblem(ElementwiseProblem):
             x: 当前向量（shape: n_var）。
             out: 输出 dict，pymoo 要求填入 \"F\"。
         """
+        import numpy as np  # 惰性导入
         candidate = vector_to_candidate(x, self.ingredients)
         aci, toxicity = multi_objective_score(candidate, self.ingredients)
         if self.mode == "single":
@@ -632,6 +831,7 @@ class PymooSingleObjectiveGA:
         population_size: int | None = None,
     ):
         """配置 GA 所需组件；默认参数来自 config/algorithms.json。"""
+        from pymoo.algorithms.soo.nonconvex.ga import GA as PymooGAAlg  # type: ignore
         cfg = _load_algorithm_config()["ga"]
         self.toxicity_weight = (
             toxicity_weight if toxicity_weight is not None else cfg["toxicity_weight"]
@@ -647,6 +847,7 @@ class PymooSingleObjectiveGA:
 
     def run(self) -> CandidateSolution:
         """执行单目标 GA 并返回最优 candidate。"""
+        from pymoo.optimize import minimize  # type: ignore
         result = minimize(
             self.problem,
             self.algorithm,
@@ -666,6 +867,7 @@ class PymooNSGAII:
         population_size: int | None = None,
     ):
         """初始化 NSGA-II；默认参数读取配置文件。"""
+        from pymoo.algorithms.moo.nsga2 import NSGA2  # type: ignore
         cfg = _load_algorithm_config()["nsga2"]
         self.generations = (
             generations if generations is not None else cfg["generations"]
@@ -674,13 +876,14 @@ class PymooNSGAII:
         self.problem = CombinationProblem(ingredients, mode="multi")
         self.algorithm = NSGA2(pop_size=pop)
 
-    def run(self) -> Tuple[List[CandidateSolution], np.ndarray]:
+    def run(self) -> Tuple[List[CandidateSolution], "np.ndarray"]:
         """执行 NSGA-II 并返回 candidate 与目标值矩阵。
 
         Returns:
             solutions: 输入向量转化的 CandidateSolution 列表。
             np.ndarray: 每个 solution 的目标值（ACI 取负 + 肝毒性）。
         """
+        from pymoo.optimize import minimize  # type: ignore
         result = minimize(
             self.problem,
             self.algorithm,
@@ -709,8 +912,9 @@ class PySwarmsPSO:
         self.options = options if options is not None else cfg["options"]
         self.dimensions = len(ingredients) * 2
 
-    def _fitness(self, swarm: np.ndarray) -> np.ndarray:
+    def _fitness(self, swarm: "np.ndarray") -> "np.ndarray":
         """pyswarms 回调：计算每个粒子的目标值（越小越优）。"""
+        import numpy as np  # 惰性导入
         scores = []
         for particle in swarm:
             candidate = vector_to_candidate(particle, self.ingredients)
@@ -720,6 +924,8 @@ class PySwarmsPSO:
 
     def run(self) -> CandidateSolution:
         """执行 PSO 并返回最优 candidate。"""
+        import numpy as np  # 惰性导入
+        from pyswarms.single.global_best import GlobalBestPSO  # type: ignore
         optimizer = GlobalBestPSO(
             n_particles=self.swarm_size,
             dimensions=self.dimensions,
