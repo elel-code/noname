@@ -13,12 +13,16 @@
   "ga": {
     "generations": 25,
     "population_size": 32,
-    "toxicity_weight": 1.0
+    "toxicity_weight": 1.0,
+    "crossover_prob": null,
+    "mutation_prob": null
   },
   "nsga2": {
     "generations": 30,
     "population_size": 40,
-    "max_candidates": null
+    "max_candidates": null,
+    "crossover_prob": null,
+    "mutation_prob": null
   },
   "pso": {
     "iterations": 40,
@@ -50,6 +54,10 @@
   - 种群规模；影响解的多样性与计算量。建议 16–128。
 - `toxicity_weight`（float，默认 1.0）
   - 单目标适应度公式 `ACI - toxicity_weight * 肝毒性` 中的惩罚权重；范围 `[0, +∞)`。
+- `crossover_prob`（float|null，默认 null）
+  - 交叉概率；取值范围 `[0,1]`。为 `null` 或未配置时沿用 pymoo GA 的默认设置。
+- `mutation_prob`（float|null，默认 null）
+  - 变异概率；取值范围 `[0,1]`。为 `null` 或未配置时沿用 pymoo GA 的默认设置。
 
 ### 2) NSGA-II（多目标，Pymoo NSGA-II）
 - `generations`（int，默认 30）
@@ -57,6 +65,10 @@
   - 与 GA 类似，数值越大越充分但更耗时。
 - `max_candidates`（int|null，默认 null）
   - 将最终候选解下采样到最多 N 个。保持毒性维度的等间距采样以近似均匀分布；CLI 的 `--max-candidates` 优先于配置。
+- `crossover_prob`（float|null，默认 null）
+  - NSGA-II 的交叉概率；取值范围 `[0,1]`。为 `null` 或未配置时使用 pymoo 默认值。
+- `mutation_prob`（float|null，默认 null）
+  - NSGA-II 的变异概率；取值范围 `[0,1]`。为 `null` 或未配置时使用 pymoo 默认值。
 
 ### 3) PSO（单目标，PySwarms PSO）
 - `iterations`（int，默认 40）

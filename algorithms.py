@@ -31,8 +31,22 @@ if TYPE_CHECKING:  # 仅类型检查用途
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config" / "algorithms.json"
 _DEFAULT_ALGO_CONFIG = {
-    "ga": {"generations": 25, "population_size": 32, "toxicity_weight": 1.0},
-    "nsga2": {"generations": 30, "population_size": 40, "max_candidates": None},
+    "ga": {
+        "generations": 25,
+        "population_size": 32,
+        "toxicity_weight": 1.0,
+        # 交叉与变异概率：None 表示沿用 pymoo 默认行为
+        "crossover_prob": None,
+        "mutation_prob": None,
+    },
+    "nsga2": {
+        "generations": 30,
+        "population_size": 40,
+        "max_candidates": None,
+        # 多目标 NSGA-II 也支持单独调整交叉/变异概率
+        "crossover_prob": None,
+        "mutation_prob": None,
+    },
     "pso": {
         "iterations": 40,
         "swarm_size": 24,
@@ -841,8 +855,16 @@ class PymooSingleObjectiveGA:
         toxicity_weight: float | None = None,
         generations: int | None = None,
         population_size: int | None = None,
+        crossover_prob: float | None = None,
+        mutation_prob: float | None = None,
     ):
-        """配置 GA 所需组件；默认参数来自 config/algorithms.json。"""
+        """配置 GA 所需组件；默认参数来自 config/algorithms.json。
+
+        参数优先级（从高到低）：
+        1. 显式传入的 `toxicity_weight/generations/population_size/crossover_prob/mutation_prob`；
+        2. 配置文件 `config/algorithms.json` 中的 `ga.*`；
+        3. 本模块内置默认值与 pymoo 算法内部默认。
+        """
         from pymoo.algorithms.soo.nonconvex.ga import GA as PymooGAAlg  # type: ignore
         cfg = _load_algorithm_config()["ga"]
         self.toxicity_weight = (
@@ -856,6 +878,35 @@ class PymooSingleObjectiveGA:
             ingredients, mode="single", toxicity_weight=self.toxicity_weight
         )
         self.algorithm = PymooGAAlg(pop_size=pop, eliminate_duplicates=True)
+        # 若配置了交叉/变异概率，则覆盖 pymoo 默认设置（0..1 之间）
+        eff_crossover_prob = (
+            crossover_prob
+            if crossover_prob is not None
+            else cfg.get("crossover_prob", None)
+        )
+        if eff_crossover_prob is not None:
+            try:
+                prob = max(0.0, min(1.0, float(eff_crossover_prob)))
+                if hasattr(self.algorithm, "crossover") and hasattr(
+                    self.algorithm.crossover, "prob"
+                ):
+                    self.algorithm.crossover.prob = prob
+            except Exception:
+                pass
+        eff_mutation_prob = (
+            mutation_prob
+            if mutation_prob is not None
+            else cfg.get("mutation_prob", None)
+        )
+        if eff_mutation_prob is not None:
+            try:
+                prob = max(0.0, min(1.0, float(eff_mutation_prob)))
+                if hasattr(self.algorithm, "mutation") and hasattr(
+                    self.algorithm.mutation, "prob"
+                ):
+                    self.algorithm.mutation.prob = prob
+            except Exception:
+                pass
         # 收敛历史（每代最佳的正向目标：ACI - w*tox），若可用
         self.convergence_: list[float] | None = None
 
@@ -896,7 +947,11 @@ class PymooNSGAII:
         generations: int | None = None,
         population_size: int | None = None,
     ):
-        """初始化 NSGA-II；默认参数读取配置文件。"""
+        """初始化 NSGA-II；默认参数读取配置文件。
+
+        交叉/变异概率同样支持通过配置 `nsga2.crossover_prob/nsga2.mutation_prob` 调整，
+        若未配置则沿用 pymoo 内部默认值。
+        """
         from pymoo.algorithms.moo.nsga2 import NSGA2  # type: ignore
         cfg = _load_algorithm_config()["nsga2"]
         self.generations = (
@@ -905,6 +960,27 @@ class PymooNSGAII:
         pop = population_size if population_size is not None else cfg["population_size"]
         self.problem = CombinationProblem(ingredients, mode="multi")
         self.algorithm = NSGA2(pop_size=pop)
+        # 覆盖交叉/变异概率配置（若提供），不影响未配置时的默认行为
+        crossover_prob_cfg = cfg.get("crossover_prob", None)
+        if crossover_prob_cfg is not None:
+            try:
+                prob = max(0.0, min(1.0, float(crossover_prob_cfg)))
+                if hasattr(self.algorithm, "crossover") and hasattr(
+                    self.algorithm.crossover, "prob"
+                ):
+                    self.algorithm.crossover.prob = prob
+            except Exception:
+                pass
+        mutation_prob_cfg = cfg.get("mutation_prob", None)
+        if mutation_prob_cfg is not None:
+            try:
+                prob = max(0.0, min(1.0, float(mutation_prob_cfg)))
+                if hasattr(self.algorithm, "mutation") and hasattr(
+                    self.algorithm.mutation, "prob"
+                ):
+                    self.algorithm.mutation.prob = prob
+            except Exception:
+                pass
 
     def run(self) -> Tuple[List[CandidateSolution], "np.ndarray"]:
         """执行 NSGA-II 并返回 candidate 与目标值矩阵。
