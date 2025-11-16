@@ -183,18 +183,23 @@ ACI 的计算公式如下：
 
 完整字段、默认值与调优建议，请参见：`CONFIG.md`。
 
-示例（与当前默认一致）：
+示例（与当前默认一致，含可选的交叉/变异概率字段）：
 
 ```
 {
   "ga": {
     "generations": 25,
     "population_size": 32,
-    "toxicity_weight": 1.0
+    "toxicity_weight": 1.0,
+    "crossover_prob": null,
+    "mutation_prob": null
   },
   "nsga2": {
     "generations": 30,
-    "population_size": 40
+    "population_size": 40,
+    "max_candidates": null,
+    "crossover_prob": null,
+    "mutation_prob": null
   },
   "pso": {
     "iterations": 40,
@@ -208,6 +213,20 @@ ACI 的计算公式如下：
   }
 }
 ```
+
+### GA/NSGA-II 交叉与变异概率调参建议
+
+- 字段位置：
+  - 单目标 GA：`ga.crossover_prob`、`ga.mutation_prob`
+  - 多目标 NSGA-II：`nsga2.crossover_prob`、`nsga2.mutation_prob`
+- 取值范围：`[0, 1]`，`null` 或未配置时表示“使用 pymoo 内部默认值”，不会改变当前行为。
+- 建议区间（经验值）：
+  - 交叉概率 `crossover_prob`：一般 `0.8–0.95`，偏大有利于加速收敛，偏小保留更强的多样性。
+  - 变异概率 `mutation_prob`：一般 `0.01–0.2`，偏大增强探索、但结果波动更大，偏小则更稳定但可能早熟。
+- 调参思路：
+  - 若收敛太慢或解质量提升缓慢：适当提高 `crossover_prob`，或略微降低 `mutation_prob`。
+  - 若解过早收敛、不同运行结果差异不大：提高 `mutation_prob` 或同时略微降低 `crossover_prob`。
+  - 对安全性/多样性要求更高时，可在调 `toxicity_weight/aci.lambda_weight` 的同时适当提高变异概率。
 
 参数说明（按模块）：
 

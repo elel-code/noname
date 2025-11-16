@@ -55,8 +55,12 @@ ings = load_ingredients("resources/templates/ingredients.csv", fmt="csv")
 ### 算法封装
 
 - `CombinationProblem`（pymoo 兼容问题定义）
-- `PymooSingleObjectiveGA(ingredients, ...)` → `.run() -> CandidateSolution`
-- `PymooNSGAII(ingredients, ...)` → `.run() -> list[CandidateSolution], np.ndarray`
+- `PymooSingleObjectiveGA(ingredients, toxicity_weight=None, generations=None, population_size=None, crossover_prob=None, mutation_prob=None)`
+  - 用于单目标优化（最大化 `ACI - toxicity_weight * 肝毒性`），`.run() -> CandidateSolution`
+  - 交叉/变异概率优先级：构造函数参数 > `config/algorithms.json` 中的 `ga.crossover_prob/ga.mutation_prob` > pymoo 默认。
+- `PymooNSGAII(ingredients, generations=None, population_size=None)`
+  - 多目标 NSGA-II（最小化 `(-ACI, toxicity)`），`.run() -> list[CandidateSolution], np.ndarray`
+  - 交叉/变异概率可通过配置 `nsga2.crossover_prob/nsga2.mutation_prob` 调整。
 - `PySwarmsPSO(ingredients, ...)` → `.run() -> CandidateSolution`
 
 注意：numpy/pymoo/pyswarms/dilipred 均惰性导入，仅在使用到相应功能时才需要环境已安装依赖。
